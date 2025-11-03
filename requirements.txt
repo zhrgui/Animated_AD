@@ -1,0 +1,8 @@
+pandas
+requests
+beautifulsoup4
+icrawler
+pillow
+lxml
+whisperx
+speechbrain
