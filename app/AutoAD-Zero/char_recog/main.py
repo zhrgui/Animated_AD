@@ -86,12 +86,12 @@ def main(args, movie_title_to_imdbid, anno_df, anno_df_with_face):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default="cmdad", type=str)
-    parser.add_argument('--anno_path', default="/scratch/shared/beegfs/zhongrui/autoad_data/annotations/animated_cmd_ad_anno_v1.csv", type=str)
-    parser.add_argument('--track_preds', default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0404_videollama2/cmd_animated_set_frame_predictions.json", type=str)
-    parser.add_argument('--video_dir', default="/scratch/shared/beegfs/zhongrui/animated_videos", type=str)
-    parser.add_argument('--output_dir', default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0406_visualization", type=str)
+    parser.add_argument('--anno_path', required=True, type=str, help='Path to annotation CSV')
+    parser.add_argument('--track_preds', required=True, type=str, help='Path to track predictions JSON')
+    parser.add_argument('--video_dir', required=True, type=str, help='Directory containing video files')
+    parser.add_argument('--output_dir', required=True, type=str, help='Output directory for results')
 
-    parser.add_argument('--movie_title_to_imdbid_file', default="/scratch/shared/beegfs/zhongrui/autoad_data/annotations/movie_title_to_imdb.json", type=str)
+    parser.add_argument('--movie_title_to_imdbid_file', required=True, type=str, help='Path to movie_title_to_imdb JSON')
     parser.add_argument('--score_thresh', default=0.45, type=float, help='threshold on the cosine similarity for character recognition')
     args = parser.parse_args()
 

@@ -160,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument('--frame_sampling', default=None, type=str)
     parser.add_argument('--anno_path', default=None, type=str)
     parser.add_argument('--output_dir', default=None, type=str)
-    parser.add_argument('--video_dir', default="/scratch/shared/beegfs/zhongrui/animated_videos", type=str)
+    parser.add_argument('--video_dir', required=True, type=str, help='Directory containing video files')
     parser.add_argument('--label_type', default="boxes", type=str)
     parser.add_argument('--label_width', default=10, type=int, help='label_width, 10 in a canvas 1000')
     parser.add_argument('--label_alpha', default=0.8, type=float)

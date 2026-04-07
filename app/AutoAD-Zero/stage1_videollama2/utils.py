@@ -10,8 +10,9 @@ from PIL import Image
 from io import BytesIO
 from decord import VideoReader, cpu
 
-# modify the path below
-sys.path.append("/users/zhongrui/VideoLLaMA2/")
+# modify the path below to point to your VideoLLaMA2 installation
+assert "VIDEOLLAMA2_PATH" in os.environ, "Set VIDEOLLAMA2_PATH environment variable to point to your VideoLLaMA2 installation"
+sys.path.append(os.environ["VIDEOLLAMA2_PATH"])
 from videollama2.conversation import conv_templates
 from videollama2.constants import DEFAULT_MMODAL_TOKEN, MMODAL_TOKEN_INDEX
 from videollama2.mm_utils import tokenizer_MMODAL_token

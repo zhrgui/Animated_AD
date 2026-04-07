@@ -60,7 +60,7 @@ def main():
     # Load SAM2 and Owlv2
     if args.mask:
         print("initializing sam2")
-        sam2_checkpoint = "/scratch/shared/beegfs/zhongrui/sam2_ckpt/sam2.1_hiera_large.pt"
+        sam2_checkpoint = args.sam2_checkpoint
         model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         predictor = SAM2ImagePredictor(sam2_model)
@@ -287,7 +287,8 @@ if __name__ == '__main__':
     parser.add_argument('--vis_folder', default=None, type=str)
 
     parser.add_argument('--mask', action='store_true', help="Enable masking")
-    parser.add_argument('--box', action='store_true', help="Enable masking")
+    parser.add_argument('--box', action='store_true', help="Enable bounding box detection")
+    parser.add_argument('--sam2_checkpoint', default=None, type=str, help='Path to SAM2 checkpoint (required if --mask is set)')
     args = parser.parse_args()
 
     main()

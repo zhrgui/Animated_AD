@@ -8,7 +8,8 @@ import pandas as pd
 from tqdm import tqdm
 
 import sys
-sys.path.append("/users/zhongrui/VideoLLaMA2/")
+assert "VIDEOLLAMA2_PATH" in os.environ, "Set VIDEOLLAMA2_PATH environment variable to point to your VideoLLaMA2 installation"
+sys.path.append(os.environ["VIDEOLLAMA2_PATH"])
 from videollama2.model.builder import load_pretrained_model
 
 from promptloader import get_general_prompt
@@ -64,7 +65,7 @@ def main(args):
     
     ad_dataset = D(tokenizer=tokenizer, processor=processor, general_prompt=general_prompt, video_type = video_type,
                                 anno_path=args.anno_path, video_dir=args.video_dir,
-                                label_type=args.label_type, label_width=args.label_width, label_alpha=args.label_alpha, charbank_path="/users/zhongrui/AutoAD-Zero/resources/charbanks/cmdad_charbank.json")
+                                label_type=args.label_type, label_width=args.label_width, label_alpha=args.label_alpha, charbank_path=args.charbank_path)
               
     loader = DataLoader(ad_dataset, batch_size=args.batch_size, num_workers=args.num_workers, 
                                             collate_fn=ad_dataset.collate_fn, shuffle=False, pin_memory=True)
@@ -153,10 +154,11 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--dataset', default="cmdad", type=str)
     parser.add_argument('--prompt_idx', default=0, type=int)
-    parser.add_argument('--model_path', default="/scratch/shared/beegfs/zhongrui/VideoLLaMA2-7B", type=str)
-    parser.add_argument('--anno_path', default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0404/insightface_no_charbank/cmdad_anno_with_face_reproduced_0.2_0.3_corrected.csv", type=str)
+    parser.add_argument('--model_path', required=True, type=str, help='Path to VideoLLaMA2 model')
+    parser.add_argument('--anno_path', required=True, type=str, help='Path to annotation CSV')
     parser.add_argument('--output_dir', default=None, type=str)
-    parser.add_argument('--video_dir', default="/scratch/shared/beegfs/zhongrui/animated_videos", type=str)
+    parser.add_argument('--video_dir', required=True, type=str, help='Path to video directory')
+    parser.add_argument('--charbank_path', required=True, type=str, help='Path to character bank JSON')
     parser.add_argument('--label_type', default="boxes", type=str)
     parser.add_argument('--label_width', default=10, type=int, help='label_width, 10 in a canvas 1000')
     parser.add_argument('--label_alpha', default=0.8, type=float)

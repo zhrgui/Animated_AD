@@ -190,7 +190,7 @@ def preprocess_tracks(tracks):
         shot_idx = track["shot_idx"]
 
         # Construct the path to the shot's frame directory
-        frame_dir = "/work/zhongrui/data/cmd_movies"
+        frame_dir = args.frame_dir
         shot_dir = os.path.join(frame_dir, movie_title, year, "shots", clip_idx, f"shot_{shot_idx}")
 
         # Get frame indices from filenames (e.g., "0012.jpg" -> 12)
@@ -417,16 +417,16 @@ if __name__ == '__main__':
     parser.add_argument('--fps', type=int, default=25, help='Video input fps')
     parser.add_argument('--sample_rate', type=int, default=16000, help='Audio sampling rate')
     parser.add_argument( '--n_negative_samples', type=int, default=0, help='Shift range used for synchronization. E.g. set to 30 from -15 to +15 frame shifts')
-    parser.add_argument("--resume", type=str, default="/work/zhongrui/avobjects_zgui/checkpoints/0129/6s_clip_0.6s_chunk_from_pretrained_fc_adapter_crop_synthetic_0.8_mean_bce_5.0/checkpoint.pt", help="Path to checkpoint to resume from")
+    parser.add_argument("--resume", type=str, required=True, help="Path to checkpoint to resume from")
 
-    parser.add_argument("--audio_prediction_file", type=str, default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0610_parakeet/subtitling_results.json", help="Path to the audio prediction JSON file")
-    parser.add_argument("--track_file", type=str, default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0125_cmd_test_set_sam2.1/track_file.json", help="Path to the track JSON file")
-    parser.add_argument("--vid_dir", type=str, default="/scratch/shared/beegfs/zhongrui/animated_videos", help="Directory containing video files")
-    parser.add_argument("--shot_vid_dir", type=str, default="/work/zhongrui/data/cmd_animated_shots/vid", help="Directory containing shot video files")
-    parser.add_argument("--shot_aud_dir", type=str, default="/scratch/shared/beegfs/zhongrui/visual_to_audio_0610/aud", help="Directory containing shot video files")
-    parser.add_argument("--frame_dir", type=str, default="/work/zhongrui/data/cmd_movies", help="Directory containing frame images")
-    parser.add_argument("--output_dir", type=str, default="/scratch/shared/beegfs/zhongrui/visual_to_audio_0610/tracks", help="Directory to save the output videos")
-    parser.add_argument("--save_folder", type=str, default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0610_parakeet/visual_to_audio", help="Directory to save the output videos")
+    parser.add_argument("--audio_prediction_file", type=str, required=True, help="Path to the audio prediction JSON file")
+    parser.add_argument("--track_file", type=str, required=True, help="Path to the track JSON file")
+    parser.add_argument("--vid_dir", type=str, required=True, help="Directory containing video files")
+    parser.add_argument("--shot_vid_dir", type=str, required=True, help="Directory containing shot video files")
+    parser.add_argument("--shot_aud_dir", type=str, required=True, help="Directory containing shot audio files")
+    parser.add_argument("--frame_dir", type=str, required=True, help="Directory containing frame images")
+    parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output videos")
+    parser.add_argument("--save_folder", type=str, required=True, help="Directory to save the final results")
 
     parser.add_argument("--num_chunks", type=int, default=1)
     parser.add_argument("--chunk_idx", type=int, default=0)

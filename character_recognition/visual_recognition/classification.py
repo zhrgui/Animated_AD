@@ -98,7 +98,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("Intializing SAM2")
-    sam2_checkpoint = "/scratch/shared/beegfs/zhongrui/sam2_ckpt/sam2.1_hiera_large.pt"
+    sam2_checkpoint = args.sam2_checkpoint
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
     predictor = SAM2ImagePredictor(sam2_model)
@@ -144,8 +144,6 @@ def main():
             character_bank = load_character_bank(os.path.join(args.char_feat_dir, current_movie_title))
 
             last_movie_title = current_movie_title
-        else:
-            continue
 
         k = 5
         classified_tracks = []
@@ -232,7 +230,8 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_size', default='giant', type=str, help='Architecture')
-    parser.add_argument('--ckpt_dir', default="/scratch/shared/beegfs/zhongrui/cmd_character_bank/finetuned_dinov2_weights", type=str)
+    parser.add_argument('--sam2_checkpoint', required=True, type=str, help='Path to SAM2 checkpoint')
+    parser.add_argument('--ckpt_dir', required=True, type=str, help='Path to finetuned DINOv2 weights directory')
     parser.add_argument('--track_file', default=None, type=str)
     parser.add_argument('--frame_dir', default=None, type=str)
     parser.add_argument('--save_file', default=None, type=str)

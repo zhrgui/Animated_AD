@@ -116,21 +116,21 @@ def download_audio_with_ytdlp(url, filename):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--save_folder', default=None, type=str)
-    parser.add_argument('--save_file', default=None, type=str)
+    parser.add_argument('--save_folder', default=None, type=str, help='Directory to save audio files')
+    parser.add_argument('--save_file', default=None, type=str, help='File to save cast information')
+    parser.add_argument('--movie_title_to_imdbid_file', required=True, type=str, help='Path to movie_title_to_imdb JSON')
+    parser.add_argument('--character_bank_file', required=True, type=str, help='Path to character bank JSON')
     args = parser.parse_args()
-    
-    save_folder = args.save_folder # Save the audio files
-    save_file = args.save_file # Save the cast information
+
+    save_folder = args.save_folder
+    save_file = args.save_file
 
     # Load the dictionary mapping from the movie title to its IMDb ID
-    movie_title_to_imdbid_file = "/scratch/shared/beegfs/zhongrui/autoad_data/annotations/movie_title_to_imdb.json"
-    with open(movie_title_to_imdbid_file, 'r') as infile:
+    with open(args.movie_title_to_imdbid_file, 'r') as infile:
         movie_title_to_imdbid = json.load(infile)
 
     # Load the dictionary mapping from the movie title to its character list
-    character_bank_file = "/scratch/shared/beegfs/zhongrui/cmd_character_bank/cmd_character_banks.json"
-    with open(character_bank_file, 'r') as infile:
+    with open(args.character_bank_file, 'r') as infile:
         movie_to_character_bank = json.load(infile)
 
     cast_information = {}

@@ -63,7 +63,7 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--source_dir', default="/scratch/shared/beegfs/zhongrui/cmd_movies", type=str)
+    parser.add_argument('--source_dir', required=True, type=str, help='Path to source video directory')
     parser.add_argument('--track_file', default=None, type=str)
     parser.add_argument('--save_file', default=None, type=str)
     args = parser.parse_args()

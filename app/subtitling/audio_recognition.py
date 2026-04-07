@@ -1,4 +1,5 @@
 import os
+import argparse
 import numpy as np
 import pandas as pd
 
@@ -15,7 +16,8 @@ from speechbrain.inference.speaker import EncoderClassifier
 
 import json
 
-with open("/scratch/shared/beegfs/zhongrui/autoad_data/annotations/movie_to_video_files.json", 'r') as infile:
+MOVIE_TO_VIDEO_FILE = os.environ.get("MOVIE_TO_VIDEO_FILE", "movie_to_video_files.json")
+with open(MOVIE_TO_VIDEO_FILE, 'r') as infile:
     movie_to_video = json.load(infile)
 
 clip_idx_to_movie = {}
@@ -116,14 +118,24 @@ def identify_active_speaker(query_feature, audio_example_bank):
     return identified_char_name, char_to_score[identified_char_name]
 
 if __name__ == "__main__":
-    transcription_dir = "/scratch/shared/beegfs/zhongrui/animated_transcripts"
-    audio_dir = "/scratch/shared/beegfs/zhongrui/animated_audios"
-    example_audio_file = "/work/zhongrui/avobjects_zgui/audio_example_bank.json"
-    temp_audio_dir = "/scratch/shared/beegfs/zhongrui/temp_aud"
-    save_dir = "/scratch/shared/beegfs/zhongrui/animated_transcripts_character_no_expansion"
-    threshold = 0.45
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--transcription_dir', required=True, type=str, help='Directory containing transcription files')
+    parser.add_argument('--audio_dir', required=True, type=str, help='Directory containing audio files')
+    parser.add_argument('--example_audio_file', required=True, type=str, help='Path to audio example bank JSON')
+    parser.add_argument('--temp_audio_dir', required=True, type=str, help='Temporary audio directory')
+    parser.add_argument('--save_dir', required=True, type=str, help='Directory to save results')
+    parser.add_argument('--threshold', default=0.45, type=float)
+    parser.add_argument('--actor_audio_bank_file', required=True, type=str, help='Path to actor audio bank JSON')
+    ar_args = parser.parse_args()
 
-    actor_audio_bank_file = "/scratch/shared/beegfs/zhongrui/cmd_character_bank/cmd_actor_examples.json"
+    transcription_dir = ar_args.transcription_dir
+    audio_dir = ar_args.audio_dir
+    example_audio_file = ar_args.example_audio_file
+    temp_audio_dir = ar_args.temp_audio_dir
+    save_dir = ar_args.save_dir
+    threshold = ar_args.threshold
+
+    actor_audio_bank_file = ar_args.actor_audio_bank_file
 
     classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
     audio_example_bank = load_audio_feature_bank(example_audio_file)

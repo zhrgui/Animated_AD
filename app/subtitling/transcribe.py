@@ -5,6 +5,7 @@ import os
 import copy
 import json
 import glob
+import argparse
 import pandas as pd
 import numpy as np
 import torch
@@ -188,11 +189,17 @@ if __name__ == '__main__':
         print(f'using ffmpeg from: {out}')
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    root_dir = '/scratch/shared/beegfs/zhongrui/animated_audios'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root_dir', required=True, type=str, help='Root directory containing audio files')
+    parser.add_argument('--movie_title_to_videos_file', required=True, type=str, help='Path to movie_to_video_files JSON')
+    parser.add_argument('--save_dir', required=True, type=str, help='Directory to save transcription results')
+    tr_args = parser.parse_args()
+
+    root_dir = tr_args.root_dir
 
     word_results = {}
 
-    movie_title_to_videos_file = "/scratch/shared/beegfs/zhongrui/autoad_data/annotations/movie_to_video_files.json"
+    movie_title_to_videos_file = tr_args.movie_title_to_videos_file
     with open(movie_title_to_videos_file, 'r') as infile:
         movie_title_to_videos = json.load(infile)
 
@@ -225,7 +232,7 @@ if __name__ == '__main__':
             tv_path = os.path.join(movie_dir, tv_dir)
             file_path = tv_path
             
-            save_dir = "/scratch/shared/beegfs/zhongrui/whisperx_words"
+            save_dir = tr_args.save_dir
             save_path = os.path.join(save_dir, movie_title, tv_dir, os.path.basename(file_path).replace('.mp3', '.csv').replace('.wav', '.csv'))
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             
@@ -253,23 +260,23 @@ if __name__ == '__main__':
                 start_time = word_result["start"]
                 end_time = word_result["end"]
 
-                # 3. Assign speaker labels
-                diarize_model = whisperx.DiarizationPipeline(use_auth_token="HF_TOKEN", device=device)
-                diarize_segments = diarize_model(audio)
-                result_diarize = whisperx.assign_word_speakers(diarize_segments, result_align)
-                
-                starts = []
-                ends = []
-                texts = []
-                speakers = []
-                for result_diarize_single in result_diarize['segments']:
-                    if 'speaker' in result_diarize_single.keys():
-                        speakers.append(result_diarize_single['speaker'])
-                    else:
-                        speakers.append("Unknown")
-                    starts.append(result_diarize_single['start'])
-                    ends.append(result_diarize_single['end'])
-                    texts.append(result_diarize_single['text'])
+            # 3. Assign speaker labels
+            diarize_model = whisperx.DiarizationPipeline(use_auth_token="HF_TOKEN", device=device)
+            diarize_segments = diarize_model(audio)
+            result_diarize = whisperx.assign_word_speakers(diarize_segments, result_align)
+            
+            starts = []
+            ends = []
+            texts = []
+            speakers = []
+            for result_diarize_single in result_diarize['segments']:
+                if 'speaker' in result_diarize_single.keys():
+                    speakers.append(result_diarize_single['speaker'])
+                else:
+                    speakers.append("Unknown")
+                starts.append(result_diarize_single['start'])
+                ends.append(result_diarize_single['end'])
+                texts.append(result_diarize_single['text'])
 
-                output_df = pd.DataFrame.from_records({'start': starts, 'end': ends, 'text': texts, 'speaker': speakers})
-                output_df.to_csv(save_path)
+            output_df = pd.DataFrame.from_records({'start': starts, 'end': ends, 'text': texts, 'speaker': speakers})
+            output_df.to_csv(save_path)

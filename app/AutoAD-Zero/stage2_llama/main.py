@@ -114,8 +114,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--pred_path', default="/scratch/shared/beegfs/zhongrui/Simpsons/results/stage1.csv", type=str, help='input directory')
-    parser.add_argument('--output_dir', default="/scratch/shared/beegfs/zhongrui/Simpsons/results", type=str, help='output directory')
+    parser.add_argument('--pred_path', required=True, type=str, help='Path to stage1 prediction CSV')
+    parser.add_argument('--output_dir', required=True, type=str, help='Output directory for results')
     parser.add_argument('--dataset', default="cmdad", type=str)
     parser.add_argument('--access_token', default="HF_TOKEN", type=str, help='HuggingFace token to access llama3')
     parser.add_argument('--prompt_idx', default=None, type=int, help='optional, use to indicate you own prompt')

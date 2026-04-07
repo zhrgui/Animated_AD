@@ -137,7 +137,7 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_dir', default="/datasets/lrs3/mp4/pretrain/*/*", type=str)
-    parser.add_argument('--save_dir', default="/scratch/shared/beegfs/zhongrui/lrs3/multiple_heads/mp4", type=str)
+    parser.add_argument('--save_dir', required=True, type=str, help='Directory to save synthetic data')
     args = parser.parse_args()
 
     main()

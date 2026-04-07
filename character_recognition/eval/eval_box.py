@@ -19,20 +19,6 @@ def calculate_bbox_area(bbox):
     area = width * height
     return area
 
-def compute_iou(box1, box2):
-    x_left = max(box1[0], box2[0])
-    y_top = max(box1[1], box2[1])
-    x_right = min(box1[2], box2[2])
-    y_bottom = min(box1[3], box2[3])
-
-    intersection_area = max(0, x_right - x_left) * max(0, y_bottom - y_top)
-
-    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-
-    iou = intersection_area / float(box1_area + box2_area - intersection_area)
-    return iou
-
 def non_max_suppression(bboxes, scores, labels, iou_threshold=0.5):
     """
     Perform Non-Maximum Suppression on bounding boxes with associated scores.
@@ -174,12 +160,13 @@ def main():
                             best_iou = iou
                             best_gt_idx = idx
 
-                gt_label = gt_boxes_in_image[best_gt_idx]['label']
-                if gt_label in label_mapping:
-                    gt_label = label_mapping[gt_label]
-                if best_iou >= iou_threshold and pred_label == gt_label:
-                    matched = True
-                    gt_boxes_in_image[best_gt_idx]['detected'] = True
+                if best_gt_idx >= 0 and best_iou >= iou_threshold:
+                    gt_label = gt_boxes_in_image[best_gt_idx]['label']
+                    if gt_label in label_mapping:
+                        gt_label = label_mapping[gt_label]
+                    if pred_label == gt_label:
+                        matched = True
+                        gt_boxes_in_image[best_gt_idx]['detected'] = True
 
             if matched:
                 tp.append(1)
@@ -218,8 +205,8 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prediction_file', default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0125_cmd_test_set_sam2.1/postprocessed_bboxes_predictions.json", type=str)
-    parser.add_argument('--annotation_file', default="/scratch/shared/beegfs/zhongrui/autoad_data/annotations/cmd_animated_movies_new.json", type=str)
+    parser.add_argument('--prediction_file', required=True, type=str, help='Path to prediction JSON file')
+    parser.add_argument('--annotation_file', required=True, type=str, help='Path to annotation JSON file')
     args = parser.parse_args()
 
     main()

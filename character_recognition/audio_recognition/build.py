@@ -291,17 +291,17 @@ def main():
                 except:
                     continue
 
-    save_file = "/work/zhongrui/data/cmd_animated_instance_videos/instance_confidence.json"
+    save_file = os.path.join(args.output_dir, "instance_confidence.json")
     with open(save_file, 'w') as outfile:
         json.dump(instance_confidence, outfile, indent=4)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--track_results', default="/work/zhongrui/data/track_file.json", type=str)
-    parser.add_argument('--video_dir', default="/work/zhongrui/data/cmd_animated_shots/vid", type=str)
-    parser.add_argument('--frame_dir', default="/work/zhongrui/data/cmd_movies", type=str)
-    parser.add_argument('--output_dir', default="/work/zhongrui/data/cmd_animated_instance_videos/vid", type=str)
+    parser.add_argument('--track_results', required=True, type=str, help='Path to track results JSON')
+    parser.add_argument('--video_dir', required=True, type=str, help='Directory containing shot video files')
+    parser.add_argument('--frame_dir', required=True, type=str, help='Directory containing frame images')
+    parser.add_argument('--output_dir', required=True, type=str, help='Output directory for instance videos')
     parser.add_argument('--movie_title', default=None, type=str)
     parser.add_argument('--thres', default=0.6, type=float)
 

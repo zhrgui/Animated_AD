@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import json
 
@@ -168,8 +169,12 @@ if __name__ == "__main__":
     gt_dict = {}
     pred_dict = {}
 
-    gt_file = "/users/zhongrui/avobjects_zgui/eval/cmd_test_closed_set_annotations_der.json"
-    pred_file = "/scratch/shared/beegfs/zhongrui/autoad_data/results/0405_diarisation/subtitling_results_visual_correction.json"
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--gt_file', required=True, type=str, help='Path to ground truth annotations JSON')
+    parser.add_argument('--pred_file', required=True, type=str, help='Path to prediction results JSON')
+    der_args = parser.parse_args()
+    gt_file = der_args.gt_file
+    pred_file = der_args.pred_file
 
     with open(gt_file, 'r') as infile:
         gt_annotations = json.load(infile)

@@ -89,7 +89,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prediction_file', default="/users/zhongrui/avobjects_zgui/eval/0408/predictions/seed_0/clustering_voice_bank_only_15_visual_correction.json", type=str)
+    parser.add_argument('--prediction_file', required=True, type=str, help='Path to prediction JSON file')
     parser.add_argument('--osr', action="store_true")
     args = parser.parse_args()
     main(args)

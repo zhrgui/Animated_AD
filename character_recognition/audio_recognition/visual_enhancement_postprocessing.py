@@ -19,6 +19,8 @@ def main():
     for jsonl_file in glob(os.path.join(args.result_dir, "*", "*")):
         movie_title = jsonl_file.split("/")[-2]
         clip_idx = jsonl_file.split("/")[-1].split(".")[0]
+        if movie_title not in predictions:
+            predictions[movie_title] = {}
         predictions[movie_title][clip_idx] = load_jsonl(jsonl_file)
 
     new_predictions = {}

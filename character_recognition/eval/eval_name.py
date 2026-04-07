@@ -111,8 +111,8 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_shot', default=3, type=int, help='Number of shots merged for prediction')
-    parser.add_argument('--prediction_file', default="/scratch/shared/beegfs/zhongrui/autoad_data/results/0125_cmd_test_set_sam2.1/postprocessed_bboxes_predictions.json", type=str)
-    parser.add_argument('--annotation_file', default="/work/zhongrui/transfer/annotations/cmd_animated_movies_new.json", type=str)
+    parser.add_argument('--prediction_file', required=True, type=str, help='Path to prediction JSON file')
+    parser.add_argument('--annotation_file', required=True, type=str, help='Path to annotation JSON file')
     args = parser.parse_args()
 
     main()
