@@ -182,7 +182,7 @@ if __name__ == "__main__":
     with open(pred_file, 'r') as infile:
         predictions = json.load(infile)
     
-    ignore_other = False
+    ignore_other = True
 
     # Process ground truth annotations
     for movie_title, movie_annotations in gt_annotations.items():
