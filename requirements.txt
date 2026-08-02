@@ -4,5 +4,43 @@ beautifulsoup4
 icrawler
 pillow
 lxml
-speechbrain
+# Used directly by build_voice_bank/clustering.py (ECAPA speaker embeddings) and
+# also pulled in as a pyannote-audio dependency, so its version interacts with
+# the whisperx stack below. Pinned to the version verified working on GPU here.
+speechbrain==1.1.0
 clip
+
+# --- Voice bank / subtitling (whisperx stack) ---------------------------------
+# Versions below are pinned on purpose; do NOT relax them to "latest".
+#
+# The conda env is hard-pinned to torch 2.5.1 (see conda.yaml) because xformers
+# is a conda build compiled against that exact torch. whisperx 3.5.0+ requires
+# torch>=2.7.1 and 3.7+ requires torch~=2.8.0, so installing an unpinned whisperx
+# silently upgrades torch and breaks xformers and SAM-2. 3.4.5 is the newest
+# release that still accepts torch 2.5.1.
+whisperx==3.4.5
+#
+# torchaudio must match torch 2.5.1 (cu124 build). An unpinned install pulls a
+# CUDA 13 wheel that fails at import with "libcudart.so.13: cannot open shared
+# object file", which also takes speechbrain down with it. Install with:
+#   pip install torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+torchaudio==2.5.1
+#
+# ctranslate2 4.5.0 is REQUIRED but cannot be listed here: whisperx 3.4.5 declares
+# "ctranslate2<4.5.0", so pip refuses to resolve both and errors with
+# ResolutionImpossible. Run this as a separate step after the install above:
+#
+#   pip install --no-deps ctranslate2==4.5.0
+#
+# It is needed because ct2 4.4.0 links cuDNN 8 while this env only ships cuDNN 9,
+# so 4.4.0 aborts with "Could not load library libcudnn_ops_infer.so.8".
+# faster-whisper, the actual consumer of ctranslate2, allows >=4.0,<5.
+# Afterwards `pip check` reports the violated whisperx pin -- that is expected;
+# do not "fix" it by downgrading ctranslate2.
+#
+# NOTE: ctranslate2 dlopen()s libcudnn_*.so.9 by soname and has no RPATH to
+# torch/lib, so GPU inference needs those libs on LD_LIBRARY_PATH. This is set up
+# per-env (not by pip) via $CONDA_PREFIX/lib/cudnn9 symlinks plus
+# $CONDA_PREFIX/etc/conda/activate.d/zz-cudnn9.sh -- so the env must be entered
+# with `conda activate animated_ad`; invoking the interpreter by full path skips
+# activate.d and core-dumps on the first GPU call.

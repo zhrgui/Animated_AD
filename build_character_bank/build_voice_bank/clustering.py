@@ -13,6 +13,7 @@ from tqdm import tqdm
 from sklearn.metrics.pairwise import cosine_similarity
 
 import whisperx
+from whisperx.diarize import DiarizationPipeline
 
 from speechbrain.inference.speaker import EncoderClassifier
 classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
@@ -135,27 +136,34 @@ if __name__ == "__main__":
     audio_feature_dir = args.audio_feature_dir
     save_file = args.save_file
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    batch_size = 16 # reduce if low on GPU mem
+    compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+
+    # These three models are stateless across files, so they are loaded once here
+    # instead of once per file (which cost ~25s x N files in reload overhead).
+    model = whisperx.load_model("large-v3", device, compute_type=compute_type)
+    model_a, metadata = whisperx.load_align_model(language_code='en', device=device)
+    diarize_model = DiarizationPipeline(use_auth_token=os.environ["HF_TOKEN"], device=device)
+
     # Transcribe interview videos to text using WhisperX
     for audio_file in tqdm(glob(os.path.join(src_dir, "*", "*", "*"))):
         movie_title = audio_file.split("/")[-3]
         actor_name = audio_file.split("/")[-2]
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        batch_size = 16 # reduce if low on GPU mem
-        compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+        # Skip files already transcribed, so an interrupted run can resume
+        # (mirrors the existing caching in crop_audio() and the feature stage).
+        if os.path.exists(audio_file.replace(src_dir, save_transcription_dir).replace(".wav", ".csv")):
+            continue
 
         # 1. Transcribe with original whisper (batched)
-        model = whisperx.load_model("large-v3", device, compute_type=compute_type)
         audio = whisperx.load_audio(audio_file)
         result = model.transcribe(audio, batch_size=batch_size, language="en")
 
         # 2. Align whisper output
-        # prepare Align model
-        model_a, metadata = whisperx.load_align_model(language_code='en', device=device)
         result_align = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
         # 3. Assign speaker labels
-        diarize_model = whisperx.DiarizationPipeline(use_auth_token="HF_TOKEN", device=device)
         diarize_segments = diarize_model(audio)
         result_diarize = whisperx.assign_word_speakers(diarize_segments, result_align)
 

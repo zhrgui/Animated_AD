@@ -252,6 +252,14 @@ def main():
 
         suffix = "_" + image_file.split("_")[-1]
         character_name = image_file.replace(suffix, "")
+
+        # Some characters have retrieval images but no profile image, because
+        # their wiki page carries no usable portrait. They are listed in the
+        # character table with an "Anchor confidence" of "missing". There is no
+        # anchor to rank their images against, so skip them here rather than
+        # raise; they need an anchor before they can be filtered.
+        if character_name not in character_bank:
+            continue
         profile_image_feautre = character_bank[character_name]
 
         character_selections[character_name]["image_name"].append(image_file)
