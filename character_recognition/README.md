@@ -8,7 +8,7 @@ There are two stages in our pipeline for visual character recognition, which are
 
 To run Track-Guided Region Proposal for region proposal, run:
 ```shell:
-python visual_recognition/tgrp.py --source_dir {source_dir} --save_frame_dir {save_frame_dir} --save_file {save_file}
+python visual_recognition/tgrp.py --source_dir {source_dir} --save_file {save_file}
 ```
 
 Then, to identify the character in these proposed regions, run:

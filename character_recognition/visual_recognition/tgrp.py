@@ -32,7 +32,7 @@ def shot_boundary_detection(video_file_path):
     scene_list = detect(video_file_path, ContentDetector())
     return [(scene[0].get_frames(), scene[1].get_frames()) for scene in scene_list]
 
-def split_video_into_shots_decord(video_file_path, shot_boundaries, save_frame_dir):
+def split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir):
     """
     Split a video into temporary folders of frames based on shot boundaries using decord.
 
@@ -40,6 +40,8 @@ def split_video_into_shots_decord(video_file_path, shot_boundaries, save_frame_d
         video_file_path (str): Path to the input video file.
         shot_boundaries (list): List of tuples (start_frame_idx, end_frame_idx) from shot_boundary_detection.
                                 Note: end_frame_idx is exclusive.
+        frame_dir (str): Scratch directory to write the frames into. It holds one
+                         video's frames only, so shots are keyed by shot id alone.
     Returns:
         list: A list of paths to directories containing frames for each shot.
     """
@@ -55,8 +57,7 @@ def split_video_into_shots_decord(video_file_path, shot_boundaries, save_frame_d
     for shot_id, (start, end) in enumerate(shot_boundaries):
         # Clip end to avoid overflow
         end = min(end, total_frames)
-        video_idx = video_file_path.split("/")[-1].split(".")[0]
-        shot_dir = os.path.join(save_frame_dir, video_idx, f"{shot_id}")
+        shot_dir = os.path.join(frame_dir, f"{shot_id}")
         os.makedirs(shot_dir, exist_ok=True)
         shot_dirs.append(shot_dir)
 
@@ -369,133 +370,136 @@ def main():
         # Detect shot boundaries
         shot_boundaries = shot_boundary_detection(video_file_path)
 
-        # Split video into shots and save frames
-        shot_dirs = split_video_into_shots_decord(video_file_path, shot_boundaries, args.save_frame_dir)
+        # The decoded frames are only needed while this video is being tracked,
+        # so they go to a temporary directory that is removed as soon as the
+        # video is done -- including when tracking raises.
+        with tempfile.TemporaryDirectory(prefix="tgrp_frames_") as frame_dir:
+            # Split video into shots and save frames
+            shot_dirs = split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir)
 
-        for shot_dir in shot_dirs:
-            save_shot_results = {}
-            save_shot_results["video_idx"] = video_file.split(".")[0]
-            save_shot_results["shot_idx"] = int(shot_dir.split("/")[-1])
-            print(f"Processing frames in shot directory: {shot_dir}")
+            for shot_dir in shot_dirs:
+                save_shot_results = {}
+                save_shot_results["video_idx"] = video_file.split(".")[0]
+                save_shot_results["shot_idx"] = int(shot_dir.split("/")[-1])
+                print(f"Processing frames in shot directory: {shot_dir}")
 
-            frame_names = [
-                p for p in os.listdir(shot_dir)
-                if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
-                ]
-            frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-            frame_indices = [int(os.path.splitext(p)[0]) for p in frame_names]
+                frame_names = [
+                    p for p in os.listdir(shot_dir)
+                    if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+                    ]
+                frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+                frame_indices = [int(os.path.splitext(p)[0]) for p in frame_names]
 
-            save_shot_results["start_idx"] = min(frame_indices)
-            save_shot_results["end_idx"] = max(frame_indices)
-            
-            # Randomly selelct 3 frames from the shot as seed frames
-            n = len(frame_names)
-            if n < 3:
-                key_frame_idx = random.sample(range(n), min(n, 3))
-            else:
-                division_size = n // 3
-                key_frame_idx = [
-                    random.choice(range(i * division_size, (i + 1) * division_size))
-                    for i in range(3)
-                ]
+                save_shot_results["start_idx"] = min(frame_indices)
+                save_shot_results["end_idx"] = max(frame_indices)
 
-            # Detection results for the selected seed frames
-            key_frame_detection_results = {}
-            for frame_idx in key_frame_idx:
-                img_path = os.path.join(shot_dir, frame_names[frame_idx])
-                image = Image.open(img_path).convert("RGB")
+                # Randomly selelct 3 frames from the shot as seed frames
+                n = len(frame_names)
+                if n < 3:
+                    key_frame_idx = random.sample(range(n), min(n, 3))
+                else:
+                    division_size = n // 3
+                    key_frame_idx = [
+                        random.choice(range(i * division_size, (i + 1) * division_size))
+                        for i in range(3)
+                    ]
 
-                inputs = processor(text=texts, images=image, return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                with torch.no_grad():
-                    outputs = owlv2_model(**inputs)
+                # Detection results for the selected seed frames
+                key_frame_detection_results = {}
+                for frame_idx in key_frame_idx:
+                    img_path = os.path.join(shot_dir, frame_names[frame_idx])
+                    image = Image.open(img_path).convert("RGB")
 
-                target_sizes = torch.Tensor([image.size[::-1]])
-                results = processor.post_process_object_detection(
-                    outputs=outputs, threshold=0.1, target_sizes=target_sizes
-                )
-                input_boxes = results[0]["boxes"].cpu().numpy()
-                if input_boxes.shape[0] == 0:
-                    continue
-                bbox_scores = results[0]["scores"].cpu().numpy()
+                    inputs = processor(text=texts, images=image, return_tensors="pt")
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+                    with torch.no_grad():
+                        outputs = owlv2_model(**inputs)
 
-                # NMS for detected boxes
-                selected_bboxes, selected_scores = non_max_suppression(input_boxes, bbox_scores, iou_threshold=0.5)
+                    target_sizes = torch.Tensor([image.size[::-1]])
+                    detections = processor.post_process_object_detection(
+                        outputs=outputs, threshold=0.1, target_sizes=target_sizes
+                    )
+                    input_boxes = detections[0]["boxes"].cpu().numpy()
+                    if input_boxes.shape[0] == 0:
+                        continue
+                    bbox_scores = detections[0]["scores"].cpu().numpy()
 
-                key_frame_detection_results[str(frame_idx)] = {"bbox": selected_bboxes,
-                                                            "bbox_scores": selected_scores}
+                    # NMS for detected boxes
+                    selected_bboxes, selected_scores = non_max_suppression(input_boxes, bbox_scores, iou_threshold=0.5)
 
-            # Initiate SAM2 Propagation
-            track_results_per_shot = {}
+                    key_frame_detection_results[str(frame_idx)] = {"bbox": selected_bboxes,
+                                                                "bbox_scores": selected_scores}
 
-            inference_state = video_predictor.init_state(video_path=shot_dir)
+                # Initiate SAM2 Propagation
+                track_results_per_shot = {}
 
-            for frame_idx, anns in tqdm(key_frame_detection_results.items()):
-                ann_frame_idx = int(frame_idx)
-                boxes = anns["bbox"]
+                inference_state = video_predictor.init_state(video_path=shot_dir)
 
-                for i, box in enumerate(boxes):
-                    _, out_obj_ids, out_mask_logits = video_predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=ann_frame_idx,
-                            obj_id=i,
-                            box=box,
-                        )
+                for frame_idx, anns in tqdm(key_frame_detection_results.items()):
+                    ann_frame_idx = int(frame_idx)
+                    boxes = anns["bbox"]
 
-                # Propagate the boxes forward
-                video_segments_forward = {}
-                for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state):
-                    video_segments_forward[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
+                    for i, box in enumerate(boxes):
+                        _, out_obj_ids, out_mask_logits = video_predictor.add_new_points_or_box(
+                                inference_state=inference_state,
+                                frame_idx=ann_frame_idx,
+                                obj_id=i,
+                                box=box,
+                            )
 
-                # Propagate the boxes backward
-                video_segments_reverse = {}
-                for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state, reverse=True):
-                    video_segments_reverse[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
+                    # Propagate the boxes forward
+                    video_segments_forward = {}
+                    for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state):
+                        video_segments_forward[out_frame_idx] = {
+                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                            for i, out_obj_id in enumerate(out_obj_ids)
+                        }
 
-                # Reset for next propagation
-                video_predictor.reset_state(inference_state)
+                    # Propagate the boxes backward
+                    video_segments_reverse = {}
+                    for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state, reverse=True):
+                        video_segments_reverse[out_frame_idx] = {
+                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                            for i, out_obj_id in enumerate(out_obj_ids)
+                        }
 
-                # Merge the forward and backward results
-                video_segments_all = merge_dicts(video_segments_forward, video_segments_reverse)
+                    # Reset for next propagation
+                    video_predictor.reset_state(inference_state)
 
-                # Filter empty boxes
-                video_segments = {}
+                    # Merge the forward and backward results
+                    video_segments_all = merge_dicts(video_segments_forward, video_segments_reverse)
 
-                for idx, item in video_segments_all.items():
-                    new_item = {}
-                    for object_id, mask in item.items():
-                        if not np.any(mask):
-                            continue
-                        bbox = get_bounding_box_from_mask(mask)
-                        if box_area(bbox) <= 0:
-                            continue
-                        new_item[object_id] = bbox
-                    video_segments[idx] = new_item
+                    # Filter empty boxes
+                    video_segments = {}
 
-                track_results_per_shot[str(frame_idx)] = video_segments
+                    for idx, item in video_segments_all.items():
+                        new_item = {}
+                        for object_id, mask in item.items():
+                            if not np.any(mask):
+                                continue
+                            bbox = get_bounding_box_from_mask(mask)
+                            if box_area(bbox) <= 0:
+                                continue
+                            new_item[object_id] = bbox
+                        video_segments[idx] = new_item
 
-            # Filter detected tracks through tripartite matching
-            track_results = merge_tracks(track_results_per_shot)
+                    track_results_per_shot[str(frame_idx)] = video_segments
 
-            save_shot_results["tracks"] = track_results
+                # Filter detected tracks through tripartite matching
+                track_results = merge_tracks(track_results_per_shot)
 
-            # Save shot results
-            results.write(json.dumps(save_shot_results) + "\n")
-            results.flush()
-    
+                save_shot_results["tracks"] = track_results
+
+                # Save shot results
+                results.write(json.dumps(save_shot_results) + "\n")
+                results.flush()
+
     results.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--sam2_checkpoint', required=True, type=str, help='Path to SAM2 checkpoint')
     parser.add_argument('--source_dir', required=True, type=str, help='Path to source video directory')
-    parser.add_argument('--save_frame_dir', default=None, type=str)
     parser.add_argument('--save_file', default=None, type=str)
     args = parser.parse_args()
 

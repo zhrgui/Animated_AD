@@ -15,7 +15,7 @@ To build the visual character bank, we provide a CSV file including links to the
 python build_character_bank/build_appearance_bank/build_csv.py --save_dir {save_dir} --save_file {save_file}
 ```
 
-Also, this will crawl 25 retrieved character images fron Bing Images and save to the same directory, in order to populate the character image examples. A list of character names for each movie is saved as a JSON file.
+Also, this will crawl 25 retrieved character images fron Bing Images and save to the same directory, in order to populate the character image examples. Every character found is saved to `{save_file}` as a table, one row per character, recording the wiki page its profile image came from and how confident that anchor is (`confident`, `low` or `missing`). Pass a path ending in `.csv` for a CSV table, anything else for JSON rows.
 
 Additionally, we provide an automatic pipeline for crawling profile images without Fandom links. However, this sometimes suffer from 404 errors, as the format of the links varies for different movies.
 
@@ -38,7 +38,13 @@ python feature_extraction/feature_extraction.py --img_dir {img_dir} --save_folde
 ## Audio Character Bank Construction
 Our audio character bank has two sources of audio exemplars, which are actor interviews and in-movie voice exemplars. We start to build it with online crawled actor interviews.
 
-Using the previous JSON file, we load the list of character names for each movie. We then crawl the mapping of character names to cast names on IMDb and get a list of actor names. We then query YouTube and download the most relevant videos. This can be done by:
+This stage reads the character names as a `{movie title: [character names]}` JSON, so first collapse the character table written above into that shape:
+
+```shell
+python build_character_bank/build_appearance_bank/csv_to_json.py --character_table {character_table} --save_file {character_bank_file}
+```
+
+Using that JSON file, we load the list of character names for each movie. We then crawl the mapping of character names to cast names on IMDb and get a list of actor names. We then query YouTube and download the most relevant videos. This can be done by:
 
 ```shell
 python build_voice_bank/interview_crawling.py --save_folder {save_folder} --save_file {save_file}

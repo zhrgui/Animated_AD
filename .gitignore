@@ -9,3 +9,4 @@ logs/
 *.log
 build_character_bank/build_voice_bank/run.sh
 build_character_bank/feature_extraction/run.sh
+build_character_bank/feature_extraction/extract.sh

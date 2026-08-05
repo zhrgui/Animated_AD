@@ -13,6 +13,7 @@ import clip
 from PIL import Image
 from icrawler.builtin import BingImageCrawler
 from utils import remove_and_rename_images
+from build_csv import make_record, save_character_table
 
 
 IMDB_GRAPHQL_URL = "https://caching.graphql.imdb.com/"
@@ -287,6 +288,9 @@ def crawl_profile_images_for_character(
     A textual description of the character is searched online and used as the
     CLIP text prompt when available, giving much better visual matching than
     the character name alone.
+
+    Returns `(n_saved, anchor)`, where `anchor` is the save_dir-relative path of
+    the `_0` image (the best-scoring one) or None when nothing was saved.
     """
     # Search for a textual description to use as CLIP prompt
     description = search_character_description(
@@ -324,7 +328,7 @@ def crawl_profile_images_for_character(
                     all_candidates.append(staged)
 
         if not all_candidates:
-            return 0
+            return 0, None
 
         # Stage 2: rank by CLIP score and keep the best
         scores = compute_clip_scores(
@@ -336,18 +340,21 @@ def crawl_profile_images_for_character(
 
         # Stage 3: save to final directory
         n_saved = 0
+        anchor = None
         for _score, src in selected:
             ext = os.path.splitext(src)[-1].lower()
             dst = os.path.join(final_dir, f"{character_name}_{n_saved}{ext}")
             shutil.copy2(src, dst)
+            if n_saved == 0:
+                anchor = os.path.join(movie_title, os.path.basename(dst))
             n_saved += 1
 
-    return n_saved
+    return n_saved, anchor
 
 
 def build_online_profile_images(
     movie_imdbids, save_dir, num_per_query=10, max_per_character=8,
-    num_cast=None, device="cpu",
+    num_cast=None, device="cpu", save_file=None,
 ):
     """For each movie in `movie_imdbids`, look up its characters via the
     IMDB cast graph and crawl profile images, filtering with CLIP to keep
@@ -355,8 +362,14 @@ def build_online_profile_images(
 
     Args:
         movie_imdbids: dict mapping movie title -> IMDB id (tt########).
+        save_file: character table to flush after every movie, so an
+            interrupted crawl still leaves the movies it finished on disk.
+
+    Returns `(movie_title_to_characters, records)`, the same pair build_csv.py
+    returns, so both builders describe their output the same way.
     """
     movie_title_to_characters = {}
+    records = []
     session = requests.Session()
 
     for movie_title, imdbid in movie_imdbids.items():
@@ -372,7 +385,7 @@ def build_online_profile_images(
         print(f"=== {movie_title} ({imdbid}): {len(character_names)} characters ===")
         for character_name in character_names:
             print(f"  -> crawling '{character_name}'")
-            n_saved = crawl_profile_images_for_character(
+            n_saved, anchor = crawl_profile_images_for_character(
                 character_name=character_name,
                 movie_title=movie_title,
                 save_dir=save_dir,
@@ -383,14 +396,27 @@ def build_online_profile_images(
             )
             print(f"     saved {n_saved} images for {character_name}")
 
-    return movie_title_to_characters
+            # The anchor here is the best-scoring image search result, not a
+            # portrait any source declares as this character's own, so it can
+            # never reach build_csv.py's 'confident'; a character the crawl
+            # returned nothing for is 'missing', exactly as there.
+            record = make_record(None, anchor, "bing" if anchor else None, "imdb")
+            record["movie"] = movie_title
+            records.append((character_name, record))
+
+        if save_file is not None:
+            save_character_table(records, save_file)
+
+    return movie_title_to_characters, records
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--src_csv', default="src.csv", type=str)
     parser.add_argument('--save_dir', default=None, type=str)
-    parser.add_argument('--save_file', default=None, type=str)
+    parser.add_argument('--save_file', default=None, type=str,
+                        help="Character table to write; CSV when the path ends "
+                             "in .csv, otherwise JSON rows.")
     parser.add_argument('--num_per_query', default=10, type=int,
                         help="Images to request per query.")
     parser.add_argument('--max_per_character', default=8, type=int,
@@ -422,20 +448,23 @@ if __name__ == "__main__":
         movie_imdbids[title] = imdbid
 
     # Crawl profile images online
-    movie_title_to_characters = build_online_profile_images(
+    movie_title_to_characters, records = build_online_profile_images(
         movie_imdbids,
         save_dir,
         num_per_query=args.num_per_query,
         max_per_character=args.max_per_character,
         num_cast=args.num_cast,
         device=device,
+        save_file=save_file,
     )
 
-    # Remove duplicates and re-index each character folder
+    # Remove duplicates and re-index each character folder. De-duplication only
+    # ever drops a repeat of an image that is already there, so the _0 anchor
+    # each record names survives and keeps its name.
     for char_bank_dir in glob(os.path.join(save_dir, "*")):
         remove_and_rename_images(char_bank_dir)
 
-    # Save the character information
+    # Save the character information, in the table build_csv.py writes so the
+    # two builders' output can be read the same way.
     if save_file is not None:
-        with open(save_file, 'w') as outfile:
-            json.dump(movie_title_to_characters, outfile, indent=4)
+        save_character_table(records, save_file)

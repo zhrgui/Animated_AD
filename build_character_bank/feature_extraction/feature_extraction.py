@@ -95,11 +95,14 @@ def main():
     if args.vis_folder is not None:
         os.makedirs(args.vis_folder, exist_ok=True)
 
-    # Separate profile images and retrieval images for filtering
+    # Separate profile images and retrieval images for filtering. With
+    # --embed_all every image is treated like a profile image (embedded as-is):
+    # used for pre-cropped instance banks, where selection already happened and
+    # there are no _0 anchors.
     profile_images = []
     retrieval_images = []
     for image_file in os.listdir(args.img_dir):
-        if os.path.basename(image_file).split(".")[0].split("_")[-1] == "0":
+        if args.embed_all or os.path.basename(image_file).split(".")[0].split("_")[-1] == "0":
             profile_images.append(image_file)
         else:
             retrieval_images.append(image_file)
@@ -191,6 +194,9 @@ def main():
         save_filename = os.path.join(args.save_folder, image_file)
         np.savez(save_filename, feature=feats_np)
     
+    if args.embed_all:
+        return
+
     # Load the character bank from the profile images
     character_bank = load_character_bank(args.save_folder)
 
@@ -203,7 +209,7 @@ def main():
         # Error handling when sometimes the image downloaded fails
         try:
             image = Image.open(os.path.join(args.img_dir, image_file))
-            image = rgba_to_rgb_alpha_to_white(image)
+            image, _ = rgba_to_rgb_alpha_to_white(image)
         except:
             continue
 
@@ -294,6 +300,9 @@ if __name__ == '__main__':
     parser.add_argument('--num_per_character', default=8, type=int)
     parser.add_argument('--vis_folder', default=None, type=str)
 
+    parser.add_argument('--embed_all', action='store_true',
+                        help="Embed every image directly (no profile/retrieval split, "
+                             "no top-k filtering); for pre-cropped instance images")
     parser.add_argument('--mask', action='store_true', help="Enable masking")
     parser.add_argument('--box', action='store_true', help="Enable bounding box detection")
     parser.add_argument('--sam2_checkpoint', default=None, type=str, help='Path to SAM2 checkpoint (required if --mask is set)')

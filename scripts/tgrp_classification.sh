@@ -68,7 +68,6 @@ run_shard() {
     CUDA_VISIBLE_DEVICES="$gpu" python visual_recognition/tgrp.py \
         --sam2_checkpoint "$SAM2_CHECKPOINT" \
         --source_dir "$shard_src" \
-        --save_frame_dir "$FRAME_DIR" \
         --save_file "$track_file"
 
     echo "[shard ${shard} | gpu ${gpu}] character identification"
