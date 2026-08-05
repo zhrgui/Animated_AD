@@ -1,9 +1,23 @@
+"""
+LWTNet: the two-stream audio-visual synchronisation network from
+"Self-Supervised Learning of Audio-Visual Objects from Video" (Afouras et al.),
+plus the temporal-adapter variant that we fine-tune on animated content.
+"""
+
 import torch
 import torch.nn as nn
-from utils import DebugModule, calc_receptive_field
+
+from utils.net import DebugModule, calc_receptive_field
 
 
 class LWTNet(nn.Module):
+    """
+    Video and audio encoders projecting into a shared 1024-d embedding space.
+
+    forward_vid: B x 3 x t x H x W  ->  B x 1024 x t' x h x w
+    forward_aud: B x 1 x F x m      ->  B x 1024 x m'
+    """
+
     def __init__(self):
         super().__init__()
 
@@ -148,143 +162,39 @@ class LWTNet(nn.Module):
         out = self.ff_aud(out)
         # squeeze the spatial dimensions of audio - those will always be constant
         out = out.squeeze(-1).squeeze(-2)
-        # out = out.squeeze(-1)
         return out
 
+    def forward(self, video, audio, return_feats=False):
+        """
+        Encode a video and an audio batch in one call.
 
-class LWTNet_temporal_adapter(nn.Module):
+        Training goes through this (rather than calling forward_vid / forward_aud
+        directly) so that DistributedDataParallel sees a single forward pass and
+        actually synchronises the gradients across ranks.
+        """
+        vid_emb, vid_feats = self.forward_vid(video, return_feats=True)
+        aud_emb = self.forward_aud(audio)
+        if return_feats:
+            return vid_emb, aud_emb, vid_feats
+        return vid_emb, aud_emb
+
+
+class LWTNet_temporal_adapter(LWTNet):
+    """
+    LWTNet with a temporal adapter on top of each embedding head.
+
+    Both adapters collapse the 11-step receptive field of a 15-frame / 60-mel
+    chunk into a single embedding, so `forward_vid` returns a singleton temporal
+    dimension. This is the variant that gets fine-tuned on animated video; the
+    encoders are initialised from a pretrained LWTNet checkpoint and the adapters
+    start from scratch (see `model.checkpoint.load_model_params`).
+    """
 
     def __init__(self):
         super().__init__()
 
-        self.net_lip = self.build_net_vid()
-        self.ff_lip = NetFC(input_dim=512, hidden_dim=512, embed_dim=1024)
-
-        self.net_aud = self.build_net_aud()
-        self.ff_aud = NetFC(input_dim=512, hidden_dim=512, embed_dim=1024)
-
-        _, _, _, self.start_offset = calc_receptive_field(self.net_lip.layers,
-                                                          imsize=400)
-
-        self.logits_scale = nn.Linear(1, 1, bias=False)
-        torch.nn.init.ones_(self.logits_scale.weight)
-
         self.vid_adapter = nn.Conv3d(in_channels=1024, out_channels=1024, kernel_size=(11, 1, 1), stride=(1, 1, 1), padding=(0, 0, 0))
         self.aud_adapter = nn.Conv3d(in_channels=1024, out_channels=1024, kernel_size=(1, 11, 1), stride=(1, 1, 1), padding=(0, 0, 0))
-
-    def build_net_vid(self):
-        layers = [
-            {
-                'type': 'conv3d',
-                'n_channels': 64,
-                'kernel_size': (5, 7, 7),
-                'stride': (1, 2, 2),
-                'padding': (0),
-                'maxpool': {
-                    'kernel_size': (1, 3, 3),
-                    'stride': (1, 2, 2)
-                }
-            },
-            {
-                'type': 'conv3d',
-                'n_channels': 128,
-                'kernel_size': (1, 5, 5),
-                'stride': (1, 2, 2),
-                'padding': (0, 0, 0),
-            },
-            {
-                'type': 'conv3d',
-                'n_channels': 256,
-                'kernel_size': (1, 3, 3),
-                'stride': (1, 1, 1),
-                'padding': (0, 1, 1),
-            },
-            {
-                'type': 'conv3d',
-                'n_channels': 256,
-                'kernel_size': (1, 3, 3),
-                'stride': (1, 1, 1),
-                'padding': (0, 1, 1),
-            },
-            {
-                'type': 'conv3d',
-                'n_channels': 256,
-                'kernel_size': (1, 3, 3),
-                'stride': (1, 1, 1),
-                'padding': (0, 1, 1),
-                'maxpool': {
-                    'kernel_size': (1, 3, 3),
-                    'stride': (1, 2, 2)
-                }
-            },
-            {
-                'type': 'fc3d',
-                'n_channels': 512,
-                'kernel_size': (1, 5, 5),
-                'stride': (1, 1, 1),
-                'padding': (0),
-            },
-        ]
-        return VGGNet(n_channels_in=3, layers=layers)
-
-    def build_net_aud(self):
-        layers = [
-            {
-                'type': 'conv2d',
-                'n_channels': 64,
-                'kernel_size': (3, 3),
-                'stride': (2, 1),
-                'padding': (1, 1),
-                'maxpool': {
-                    'kernel_size': (3, 1),
-                    'stride': (2, 1)
-                }
-            },
-            {
-                'type': 'conv2d',
-                'n_channels': 192,
-                'kernel_size': (3, 3),
-                'stride': (1, 1),
-                'padding': (1, 1),
-                'maxpool': {
-                    'kernel_size': (3, 3),
-                    'stride': (2, 2)
-                }
-            },
-            {
-                'type': 'conv2d',
-                'n_channels': 384,
-                'kernel_size': (3, 3),
-                'stride': (1, 1),
-                'padding': (1, 1),
-            },
-            {
-                'type': 'conv2d',
-                'n_channels': 256,
-                'kernel_size': (3, 3),
-                'stride': (1, 1),
-                'padding': (1, 1),
-            },
-            {
-                'type': 'conv2d',
-                'n_channels': 256,
-                'kernel_size': (3, 3),
-                'stride': (1, 1),
-                'padding': (1, 1),
-                'maxpool': {
-                    'kernel_size': (2, 3),
-                    'stride': (2, 2)
-                }
-            },
-            {
-                'type': 'fc2d',
-                'n_channels': 512,
-                'kernel_size': (4, 4),
-                'stride': (1, 1),
-                'padding': (0, 0),
-            },
-        ]
-        return VGGNet(n_channels_in=1, layers=layers)
 
     def forward_vid(self, x, return_feats=False):
         out_conv6 = self.net_lip(x)
@@ -303,7 +213,6 @@ class LWTNet_temporal_adapter(nn.Module):
         out = self.aud_adapter(out)
         # squeeze the spatial dimensions of audio - those will always be constant
         out = out.squeeze(-1).squeeze(-2)
-        # out = out.squeeze(-1)
         return out
 
 

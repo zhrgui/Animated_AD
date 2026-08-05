@@ -102,7 +102,11 @@ def main():
     profile_images = []
     retrieval_images = []
     for image_file in os.listdir(args.img_dir):
-        if args.embed_all or os.path.basename(image_file).split(".")[0].split("_")[-1] == "0":
+        # splitext, not split("."): a character whose name carries a period
+        # ('Mr. Ping', 'B.O.B.', 'Dr. Cockroach Ph.D.') splits on the wrong dot,
+        # so its _0 anchor is filed as a retrieval image, never enters the
+        # character bank, and every one of its images is then discarded below.
+        if args.embed_all or os.path.splitext(os.path.basename(image_file))[0].split("_")[-1] == "0":
             profile_images.append(image_file)
         else:
             retrieval_images.append(image_file)
@@ -218,38 +222,49 @@ def main():
         else:
             output_filename = None
 
-        # Call OWLv2 for character box detection
-        inputs = processor(text=texts, images=image, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        target_sizes = torch.Tensor([image.size]).to(device)
-        
-        with torch.no_grad():
-            outputs = owlv2_model(**inputs)
-            results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes, threshold=0.1)
-            input_boxes = results[0]["boxes"].detach().cpu().numpy().tolist()
+        # Call OWLv2 for character box detection. Without --box there is no
+        # detector to call, so the whole image is the crop -- same as the
+        # profile loop, which leaves the image untouched when --box is off.
+        if args.box:
+            inputs = processor(text=texts, images=image, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            target_sizes = torch.Tensor([image.size]).to(device)
 
-        if len(input_boxes) > 1:
-            # Optionally, use all boxes or the most confident one
-            idx = torch.argmax(results[0]["scores"])
-            bbox = input_boxes[idx]
-        elif len(input_boxes) == 1:
-            bbox = input_boxes[0]
+            with torch.no_grad():
+                outputs = owlv2_model(**inputs)
+                results = processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes, threshold=0.1)
+                input_boxes = results[0]["boxes"].detach().cpu().numpy().tolist()
+
+            if len(input_boxes) > 1:
+                # Optionally, use all boxes or the most confident one
+                idx = torch.argmax(results[0]["scores"])
+                bbox = input_boxes[idx]
+            elif len(input_boxes) == 1:
+                bbox = input_boxes[0]
+            else:
+                # No character found: this retrieval image cannot be scored
+                # against the anchor, so drop it.
+                continue
         else:
-            continue
+            width, height = image.size
+            bbox = [0, 0, width, height]
 
         # Call SAM2 for instance mask given the detected box as prompt
-        predictor.set_image(image)
+        if args.mask:
+            predictor.set_image(image)
 
-        masks, scores, _ = predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=[bbox],
-            multimask_output=False,
-        )
+            masks, scores, _ = predictor.predict(
+                point_coords=None,
+                point_labels=None,
+                box=[bbox],
+                multimask_output=False,
+            )
 
-        instance_mask = masks[0]
+            instance_mask = np.squeeze(masks[0])
+        else:
+            instance_mask = None
 
-        image = crop_image(image, bbox, np.squeeze(instance_mask), output_filename)
+        image = crop_image(image, bbox, instance_mask, output_filename)
 
         image_tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
@@ -307,5 +322,13 @@ if __name__ == '__main__':
     parser.add_argument('--box', action='store_true', help="Enable bounding box detection")
     parser.add_argument('--sam2_checkpoint', default=None, type=str, help='Path to SAM2 checkpoint (required if --mask is set)')
     args = parser.parse_args()
+
+    # SAM2 only ever runs on an OWLv2 box, and the profile loop ignores --mask
+    # entirely when --box is off. Reject the combination rather than silently
+    # masking retrieval images but not the anchors they are compared against.
+    if args.mask and not args.box:
+        parser.error("--mask requires --box (SAM2 is prompted with the OWLv2 box)")
+    if args.mask and args.sam2_checkpoint is None:
+        parser.error("--mask requires --sam2_checkpoint")
 
     main()

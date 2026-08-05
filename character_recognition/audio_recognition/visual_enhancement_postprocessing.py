@@ -1,17 +1,17 @@
+"""
+Merge the per-clip visual enhancement results into one prediction file.
+
+A segment keeps its voice-bank prediction unless the voice bank was unsure about
+it (score below --threshold) and a character track scored higher on the combined
+synchronisation x classification score.
+"""
+
 import argparse
 import os
 import json
 from glob import glob
 
-
-def load_jsonl(filepath):
-    """Load a JSONL file into a list of json objects."""
-    data = []
-    with open(filepath, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                data.append(json.loads(line))
-    return data
+from utils.io import load_jsonl
 
 
 def main():

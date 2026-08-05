@@ -1,0 +1,55 @@
+# Train / fine-tune LWTNet on real talking faces (LRS2/LRS3), optionally mixed
+# with the synthetic two-speaker clips from preprocess/generate_synthetic.py.
+#
+#   bash audio_recognition/scripts/train.sh
+#   bash audio_recognition/scripts/train.sh data.dataset=synthetic data.mixing_ratio=0.5
+#
+# This is the recipe the temporal adapters are trained with; the animated
+# fine-tune continues from the checkpoint it writes.
+
+model:
+  pretrained: ../checkpoints/avobjects_loc_sep.pt
+  trainable: [ff_lip, ff_aud, vid_adapter, aud_adapter]
+
+data:
+  dataset: lrs2                 # lrs2 | synthetic
+  lrs2_path: "/datasets/lrs2/pretrain/vid/*/*"
+  # Held out by speaker directory (see DataGenerator_LRS2). 2% of LRS2 pretrain
+  # is ~1.9k clips, which is a stable enough validation loss to pick best.pth by
+  # and cheap enough to run every eval.interval steps.
+  val_ratio: 0.02
+  # Only used by dataset: synthetic (which draws its real half from LRS3)
+  lrs3_path: null
+  synthetic_path: null
+  synthetic_split: null
+  mixing_ratio: 0.5
+  num_frames: 150               # 6s window
+  vid_chunk_size: 15            # 0.6s
+  mel_chunk_size: 60            # 0.6s
+  num_workers: 8
+
+train:
+  epochs: 5
+  # Total across all GPUs, and it has to divide by their number. A 150-frame
+  # 270x480 window costs ~1.7 GiB, so 6 fits one 16 GiB card with headroom.
+  # Only trades gradient noise: the contrastive negatives are the ten chunks
+  # within a clip, not the rest of the batch (model/losses.py).
+  batch_size: 6
+  # lr / min_lr follow DEFAULT_CONFIG (1e-4 / 1e-6).
+  warmup_steps: 1000
+  mean_suppression_weight: 5.0
+  similarity: max
+
+eval:
+  interval: 5000
+
+checkpoint:
+  dir: ../checkpoints/lwtnet_lrs2
+  interval: 5000
+  resume: null
+
+wandb:
+  enabled: true
+  project: avobjects_finetune
+  entity: null                  # null = the account's default entity
+  name: lrs2_adapter

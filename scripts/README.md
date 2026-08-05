@@ -60,7 +60,7 @@ hand in the Python entry points:
   add `parser.add_argument('--char_feat_dir', ...)` before using `$CHAR_FEAT_DIR`.
 * the same file has an empty module constant `VIDEO_IDX_TO_MOVIE_TITLES = ""`, which must
   point at the clip-index-to-movie-title mapping JSON.
-* `postprocessing.py` and `select.py` expect the `movie_title` / `year` / `clip_idx` /
+* `postprocessing.py` and `select_subset.py` expect the `movie_title` / `year` / `clip_idx` /
   `tracks` / `tracking_boxes` fields, while `tgrp.py` and `classification.py` write
   `video_idx` / `shot_idx` / `track`. `SELECT_INPUT_FILE` in `config.sh` exists so the
   selection step can be pointed at whichever file carries the expected layout.

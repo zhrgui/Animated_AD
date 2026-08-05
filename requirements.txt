@@ -9,6 +9,7 @@ lxml
 # the whisperx stack below. Pinned to the version verified working on GPU here.
 speechbrain==1.1.0
 clip
+scenedetect
 
 # --- Voice bank / subtitling (whisperx stack) ---------------------------------
 # Versions below are pinned on purpose; do NOT relax them to "latest".

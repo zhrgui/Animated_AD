@@ -23,7 +23,7 @@ python visual_recognition/postprocessing.py \
 
 echo "Selecting the annotated key frames of the CMD-AM subset"
 require_path "$ANNOTATION_FILE" "box annotation file (ANNOTATION_FILE)"
-python visual_recognition/select.py \
+python visual_recognition/select_subset.py \
     --annotation_file "$ANNOTATION_FILE" \
     --track_predictions_file "$SELECT_INPUT_FILE" \
     --save_path "$VIS_SELECTED_FILE"

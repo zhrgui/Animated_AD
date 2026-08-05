@@ -29,11 +29,17 @@ python visual_recognition/postprocessing.py --source_dir {source_dir} --track_fi
 
 To prepare for evaluation on the CMDAM subset, run:
 ```shell:
-python visual_recognition/select.py --annotation_file {annotation_file} --track_predictions_file {track_predictions_file} --save_path {save_path}
+python visual_recognition/select_subset.py --annotation_file {annotation_file} --track_predictions_file {track_predictions_file} --save_path {save_path}
 ```
 This will select the predictions for frames with ground-truth boxes to evaluate in the MovieNet style.
 
 ## Audio Character Recognition
+
+The in-movie voice exemplars are cut out of the classified visual tracks, so run
+this after visual character recognition:
+```shell
+python audio_recognition/preprocess/build_voice_examples.py --track_results {track_results} --video_dir {video_dir} --frame_dir {frame_dir} --output_dir {output_dir}
+```
 
 For audio character recognition, run:
 ```shell
@@ -44,8 +50,16 @@ After getting the results from visual character recognition, the audio character
 ```shell
 python audio_recognition/visual_enhancement.py --resume {resume} --audio_prediction_file {audio_prediction_file} --track_file {track_file} --vid_dir {vid_dir} --shot_vid_dir {shot_vid_dir} --shot_aud_dir {shot_aud_dir} --frame_dir {frame_dir} --output_dir {output_dir} --save_folder {save_folder}
 
-python audio_recognition/visual_enhancement_postprocessing.py.py --result_dir {result_dir} --save_file {save_file} --threshold {threshold} --alpha {alpha}
+python audio_recognition/visual_enhancement_postprocessing.py --result_dir {result_dir} --save_file {save_file} --threshold {threshold} --alpha {alpha}
 ```
+
+The synchronisation model used by the visual enhancement is LWTNet with a
+temporal adapter, fine-tuned on animated video from a pretrained checkpoint:
+```shell
+python audio_recognition/finetune.py --config audio_recognition/config/finetune_animated.yaml
+```
+See [audio_recognition/README.md](audio_recognition/README.md) for the layout of
+that folder and the fine-tuning options.
 
 ## Evaluation
 

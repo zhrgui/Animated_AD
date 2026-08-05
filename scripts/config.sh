@@ -46,7 +46,7 @@ VIS_FRAME_PRED_FILE="${VIS_FRAME_PRED_FILE:-$OUTPUT_DIR/frame_predictions.json}"
 VIS_SELECTED_FILE="${VIS_SELECTED_FILE:-$OUTPUT_DIR/cmdam_predictions.json}"       # MovieNet-style eval input
 # Crop the background out with SAM2 masks before classification (--mask).
 USE_MASK="${USE_MASK:-1}"
-# Input of visual_recognition/select.py, i.e. the per-shot predictions to be
+# Input of visual_recognition/select_subset.py, i.e. the per-shot predictions to be
 # restricted to the annotated key frames.
 SELECT_INPUT_FILE="${SELECT_INPUT_FILE:-$VIS_CLASSIFIED_FILE}"
 
