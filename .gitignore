@@ -10,6 +10,7 @@ logs/
 build_character_bank/build_voice_bank/run.sh
 build_character_bank/feature_extraction/run.sh
 build_character_bank/feature_extraction/extract.sh
+character_recognition/logs
 
 # model weights: checkpoints/ holds the pretrained .pt and every fine-tune run
 checkpoints/

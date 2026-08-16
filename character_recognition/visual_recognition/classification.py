@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 import os
 import json
 import random
@@ -10,11 +11,16 @@ from torchvision import transforms
 from PIL import Image
 from tqdm import tqdm
 from scipy.ndimage import binary_fill_holes, binary_erosion
+from decord import VideoReader, cpu
 
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
-VIDEO_IDX_TO_MOVIE_TITLES = ""
+DEFAULT_MOVIE_TO_VIDEO_FILES = ""
+DEFAULT_SOURCE_DIR = ""
+DEFAULT_CKPT_DIR = ""
+DEFAULT_CHAR_FEAT_DIR = ""
+VIDEO_EXTENSIONS = {".avi", ".mkv", ".mov", ".mp4", ".webm"}
 
 def load_jsonl(filepath):
     """Load a JSONL file into a list of json objects."""
@@ -29,6 +35,39 @@ def load_json(filepath):
     """Load a JSON file from the given path."""
     with open(filepath, 'r') as f:
         return json.load(f)
+
+def reverse_movie_to_video_files(movie_to_video_files):
+    """Build a video-id-to-movie mapping from movie-to-video-file entries."""
+    video_idx_to_movie_titles = {}
+    for movie_title, video_files in movie_to_video_files.items():
+        for video_file in video_files:
+            video_idx = os.path.splitext(os.path.basename(video_file))[0]
+            previous_title = video_idx_to_movie_titles.get(video_idx)
+            if previous_title is not None and previous_title != movie_title:
+                raise ValueError(
+                    f"video {video_idx!r} belongs to both "
+                    f"{previous_title!r} and {movie_title!r}"
+                )
+            video_idx_to_movie_titles[video_idx] = movie_title
+    return video_idx_to_movie_titles
+
+def index_videos(source_dir):
+    """Index a nested source-video tree by extension-free clip id."""
+    videos = {}
+    for root, dirnames, filenames in os.walk(source_dir):
+        dirnames.sort()
+        for filename in sorted(filenames):
+            video_idx, extension = os.path.splitext(filename)
+            if extension.lower() not in VIDEO_EXTENSIONS:
+                continue
+            video_path = os.path.join(root, filename)
+            if video_idx in videos:
+                raise ValueError(
+                    f"duplicate video id {video_idx!r}: "
+                    f"{videos[video_idx]} and {video_path}"
+                )
+            videos[video_idx] = video_path
+    return videos
 
 def crop_object(image, bbox, mask):
     """
@@ -67,13 +106,30 @@ def crop_object(image, bbox, mask):
 def load_character_bank(character_bank_dir):
     """Load the character bank built with profile images from a directory."""
     if not os.path.exists(character_bank_dir):
-        assert AssertionError("Character bank doesn't exist")
+        raise FileNotFoundError(f"character bank does not exist: {character_bank_dir}")
     character_bank = {}
-    for file in os.listdir(character_bank_dir):
+    for file in sorted(os.listdir(character_bank_dir)):
+        if not file.lower().endswith(".npz"):
+            continue
         char_name = os.path.splitext(file)[0].split("_")[0]
-        char_feature = np.load(os.path.join(character_bank_dir, file))['feature']
-        character_bank[char_name] = char_feature
-    return character_bank
+        feature_path = os.path.join(character_bank_dir, file)
+        try:
+            with np.load(feature_path) as archive:
+                char_feature = archive['feature'].copy()
+        except (EOFError, OSError, ValueError, KeyError) as exc:
+            raise ValueError(f"invalid character feature archive: {feature_path}") from exc
+        if char_feature.ndim != 1:
+            raise ValueError(
+                f"expected a 1D character feature in {feature_path}, "
+                f"found shape {char_feature.shape}"
+            )
+        character_bank.setdefault(char_name, []).append(char_feature)
+    if not character_bank:
+        raise ValueError(f"no .npz character features found in {character_bank_dir}")
+    return {
+        char_name: np.stack(features)
+        for char_name, features in character_bank.items()
+    }
 
 def cosine_similarity(arr1, arr2):
     """
@@ -92,18 +148,24 @@ def cosine_similarity(arr1, arr2):
     return cosine_sim
 
 def main():
-    # Load the mapping between video indices to the corresponding movie titles
-    video_idx_to_movie_titles_mapping = load_json(VIDEO_IDX_TO_MOVIE_TITLES)
+    # The available metadata is movie -> [year/video_id, ...]. Reverse it once
+    # so each TGRP record can look its movie up by video_idx.
+    movie_to_video_files = load_json(args.movie_to_video_files)
+    video_idx_to_movie_titles_mapping = reverse_movie_to_video_files(movie_to_video_files)
+    video_paths = index_videos(args.source_dir)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("Intializing SAM2")
-    sam2_checkpoint = args.sam2_checkpoint
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
-    predictor = SAM2ImagePredictor(sam2_model)
+    predictor = None
+    if args.mask:
+        if not args.sam2_checkpoint:
+            raise ValueError("--sam2_checkpoint is required with --mask")
+        print("Initializing SAM2")
+        model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+        sam2_model = build_sam2(model_cfg, args.sam2_checkpoint, device=device)
+        predictor = SAM2ImagePredictor(sam2_model)
 
-    print("initializing dinov2")
+    print("Initializing DINOv2")
     model_archs = {
         "small": "vits14",
         "base": "vitb14",
@@ -122,21 +184,59 @@ def main():
 
     # Load the unclassified region proposal results
     unclassified_track_results = load_jsonl(args.track_file)
-    
+
+    missing_mapping = sorted({
+        track["video_idx"] for track in unclassified_track_results
+        if track["video_idx"] not in video_idx_to_movie_titles_mapping
+    })
+    if missing_mapping:
+        raise KeyError(
+            f"{len(missing_mapping)} video id(s) are absent from "
+            f"{args.movie_to_video_files}: {missing_mapping[:10]}"
+        )
+
+    missing_videos = sorted({
+        track["video_idx"] for track in unclassified_track_results
+        if track["video_idx"] not in video_paths
+    })
+    if missing_videos:
+        raise FileNotFoundError(
+            f"{len(missing_videos)} source video(s) are absent from "
+            f"{args.source_dir}: {missing_videos[:10]}"
+        )
+
+    # The multi-GPU splitter keeps a movie on one worker. Sorting here makes
+    # that worker load each movie's large DINOv2 checkpoint exactly once.
+    unclassified_track_results.sort(key=lambda track: (
+        video_idx_to_movie_titles_mapping[track["video_idx"]],
+        track["video_idx"],
+        int(track["shot_idx"]),
+    ))
+
     last_movie_title = None
+    loaded_video_idx = None
+    video_reader = None
+    model = None
 
     classified_track_results = []
-    for track in unclassified_track_results:
+    for track in tqdm(unclassified_track_results, desc="Classifying shots"):
         current_video_idx = track["video_idx"]
         current_movie_title = video_idx_to_movie_titles_mapping[current_video_idx]
 
         # Avoid redundant model loading
         if last_movie_title != current_movie_title:
+            if model is not None:
+                del model
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             # Load test-time finetuned DINOv2 weights
             pretrained_weights = os.path.join(args.ckpt_dir, current_movie_title, "finetuned_dinov2_weights.pth")
             model = torch.hub.load(repo_or_dir="facebookresearch/dinov2", model=model_name, pretrained=False)
             state_dict = torch.load(pretrained_weights, map_location=device, weights_only=True)
             model.load_state_dict(state_dict)
+            del state_dict
             model.eval()
             model.to(device)
 
@@ -145,23 +245,44 @@ def main():
 
             last_movie_title = current_movie_title
 
+        if loaded_video_idx != current_video_idx:
+            video_reader = VideoReader(video_paths[current_video_idx], ctx=cpu(0))
+            loaded_video_idx = current_video_idx
+
         k = 5
         classified_tracks = []
-        shot_folder = os.path.join(args.frame_dir, current_video_idx)
-        for unclassified_track in track["track"]:
+        for unclassified_track in track["tracks"]:
             # Randomly select frames across the track for character recognition
             frame_bbox_dict = unclassified_track["track"]
             frame_idx_ls = list(frame_bbox_dict.keys())
             if k < len(frame_idx_ls):
-                selected_frames = random.sample(frame_idx_ls, k)
+                rng = random.Random(
+                    f"{current_video_idx}:{track['shot_idx']}:"
+                    f"{unclassified_track.get('track_id', '')}"
+                )
+                selected_frames = rng.sample(frame_idx_ls, k)
             else:
                 selected_frames = frame_idx_ls
 
+            global_frame_indices = [
+                int(track["start_idx"]) + int(selected_frame_idx)
+                for selected_frame_idx in selected_frames
+            ]
+            invalid_indices = [
+                frame_idx for frame_idx in global_frame_indices
+                if not 0 <= frame_idx < len(video_reader)
+            ]
+            if invalid_indices:
+                raise IndexError(
+                    f"frames {invalid_indices} are outside video "
+                    f"{current_video_idx} with {len(video_reader)} frames"
+                )
+
+            decoded_frames = video_reader.get_batch(global_frame_indices).asnumpy()
             image_tensor = []
-            for selected_frame_idx in selected_frames:
-                image_path = os.path.join(shot_folder, track["shot_idx"], f"{selected_frame_idx}.jpg") 
+            for selected_frame_idx, decoded_frame in zip(selected_frames, decoded_frames):
                 bbox = frame_bbox_dict[selected_frame_idx]
-                image = Image.open(image_path).convert("RGB")
+                image = Image.fromarray(decoded_frame).convert("RGB")
 
                 # Use SAM2 to crop the background for classification
                 if args.mask:
@@ -219,22 +340,35 @@ def main():
             classified_tracks.append(classified_track)
 
         classified_shot_results = copy.deepcopy(track)
-        del classified_shot_results["track"]
-        classified_shot_results["track"] = classified_tracks
+        classified_shot_results["movie_title"] = current_movie_title
+        classified_shot_results["year"] = os.path.basename(
+            os.path.dirname(video_paths[current_video_idx])
+        )
+        classified_shot_results["clip_idx"] = current_video_idx
+        classified_shot_results["tracks"] = classified_tracks
 
         classified_track_results.append(classified_shot_results)
 
+    save_dir = os.path.dirname(os.path.abspath(args.save_file))
+    os.makedirs(save_dir, exist_ok=True)
     with open(args.save_file, 'w') as outfile:
-        json.dump(classified_track_results, outfile, indent=4)
+        json.dump(classified_track_results, outfile)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_size', default='giant', type=str, help='Architecture')
-    parser.add_argument('--sam2_checkpoint', required=True, type=str, help='Path to SAM2 checkpoint')
-    parser.add_argument('--ckpt_dir', required=True, type=str, help='Path to finetuned DINOv2 weights directory')
-    parser.add_argument('--track_file', default=None, type=str)
-    parser.add_argument('--frame_dir', default=None, type=str)
-    parser.add_argument('--save_file', default=None, type=str)
+    parser.add_argument('--sam2_checkpoint', default=None, type=str, help='Path to SAM2 checkpoint (required with --mask)')
+    parser.add_argument('--source_dir', default=DEFAULT_SOURCE_DIR, type=str, help='Root directory containing source videos')
+    parser.add_argument('--ckpt_dir', default=DEFAULT_CKPT_DIR, type=str, help='Path to finetuned DINOv2 weights directory')
+    parser.add_argument('--char_feat_dir', default=DEFAULT_CHAR_FEAT_DIR, type=str, help='Path to character feature banks')
+    parser.add_argument(
+        '--movie_to_video_files',
+        default=DEFAULT_MOVIE_TO_VIDEO_FILES,
+        type=str,
+        help='JSON mapping each movie title to its year/video-id entries',
+    )
+    parser.add_argument('--track_file', required=True, type=str)
+    parser.add_argument('--save_file', required=True, type=str)
     parser.add_argument("--mask", action="store_true")
     args = parser.parse_args()
 

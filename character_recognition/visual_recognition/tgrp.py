@@ -1,6 +1,7 @@
 import argparse
 import cv2
 import copy
+import gc
 import os
 import tempfile
 import numpy as np
@@ -30,9 +31,13 @@ def shot_boundary_detection(video_file_path):
     The tuples are of the form (start_frame_idx, end_frame_idx), in which the end_frame_idx is exclusive for the detected shot.
     """
     scene_list = detect(video_file_path, ContentDetector())
+    if not scene_list:
+        # A clip without a single detected cut yields no scenes at all; it is
+        # one shot spanning the whole video rather than nothing to track.
+        return [(0, len(VideoReader(video_file_path)))]
     return [(scene[0].get_frames(), scene[1].get_frames()) for scene in scene_list]
 
-def split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir):
+def split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir, shot_ids=None):
     """
     Split a video into temporary folders of frames based on shot boundaries using decord.
 
@@ -42,24 +47,39 @@ def split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir):
                                 Note: end_frame_idx is exclusive.
         frame_dir (str): Scratch directory to write the frames into. It holds one
                          video's frames only, so shots are keyed by shot id alone.
+        shot_ids (set): Shot ids to extract, or None for all of them. A resumed
+                        run only needs the shots it has not written yet.
     Returns:
-        list: A list of paths to directories containing frames for each shot.
+        list: A list of (shot_id, shot_dir) pairs, one per shot that holds at
+              least one frame. Shot ids stay tied to the position in
+              shot_boundaries, so they do not shift when a shot is dropped.
     """
     # Load video using decord
     vr = VideoReader(video_file_path)
     total_frames = len(vr)
 
-    shot_dirs = []
+    shots = []
 
     print(f"Splitting video into {len(shot_boundaries)} shots using decord...")
 
     # Process each shot
     for shot_id, (start, end) in enumerate(shot_boundaries):
-        # Clip end to avoid overflow
+        if shot_ids is not None and shot_id not in shot_ids:
+            continue
+
+        # Clip to what decord can actually decode: scenedetect reports a
+        # zero-length trailing scene on some clips, and its frame count can run
+        # past decord's. Either way the shot holds no frames, and an empty shot
+        # directory has nothing to detect or track.
+        start = max(0, min(start, total_frames))
         end = min(end, total_frames)
+        if start >= end:
+            print(f"Skipping empty shot {shot_id}: frame range [{start}, {end}) is empty")
+            continue
+
         shot_dir = os.path.join(frame_dir, f"{shot_id}")
         os.makedirs(shot_dir, exist_ok=True)
-        shot_dirs.append(shot_dir)
+        shots.append((shot_id, shot_dir))
 
         # Fetch frames in batch
         frame_indices = list(range(start, end))
@@ -69,7 +89,7 @@ def split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir):
             frame_path = os.path.join(shot_dir, f"{idx}.jpg")
             cv2.imwrite(frame_path, frame[:, :, ::-1])  # Convert RGB to BGR for OpenCV
 
-    return shot_dirs
+    return shots
 
 def compute_iou(box1, box2):
     x_left = max(box1[0], box2[0])
@@ -345,8 +365,108 @@ def merge_tracks(track_results_per_shot):
 
     return final_tracks_serializable_per_shot
     
+def load_completed_shots(save_file):
+    """
+    Read back the shots a previous run already wrote to save_file.
+
+    The JSONL is the source of truth for what is done: one line per finished
+    shot, flushed as it is written. A run that is killed mid-write (SLURM
+    requeues these jobs) can leave a truncated last line behind, so unparseable
+    lines are dropped and the file is rewritten before anything is appended to
+    it.
+
+    Returns:
+        dict: video_idx -> set of shot ids already present in the file.
+    """
+    completed = {}
+    if not os.path.exists(save_file):
+        return completed
+
+    kept_lines = []
+    dropped = 0
+    with open(save_file) as infile:
+        for line in infile:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                video_idx = record["video_idx"]
+                shot_idx = int(record["shot_idx"])
+            except (ValueError, TypeError, KeyError):
+                dropped += 1
+                continue
+            kept_lines.append(line if line.endswith("\n") else line + "\n")
+            completed.setdefault(video_idx, set()).add(shot_idx)
+
+    if dropped:
+        print(f"Dropping {dropped} unparseable line(s) from {save_file}")
+        tmp_path = save_file + ".repair"
+        with open(tmp_path, "w") as outfile:
+            outfile.writelines(kept_lines)
+        os.replace(tmp_path, save_file)
+
+    return completed
+
+def load_completed_videos(progress_file):
+    """
+    Read the videos a previous run finished entirely.
+
+    This sidecar is an optimisation only: it lets a finished video be skipped
+    without paying for shot detection again. Anything it misses is still caught
+    by the per-shot check against the JSONL.
+    """
+    if not os.path.exists(progress_file):
+        return set()
+    with open(progress_file) as infile:
+        return {line.strip() for line in infile if line.strip()}
+
+def mark_video_complete(progress_file, video_idx):
+    with open(progress_file, "a") as outfile:
+        outfile.write(video_idx + "\n")
+        outfile.flush()
+
+def release_inference_state(video_predictor, inference_state):
+    """
+    Drop a SAM2 inference state and hand its GPU blocks back to the allocator.
+
+    Run on the way out of every shot, whether it finished or ran out of memory:
+    the state holds that shot's image features and per-frame memory, which would
+    otherwise stay resident while the next shot's state is being built.
+    """
+    if inference_state is not None:
+        try:
+            video_predictor.reset_state(inference_state)
+        except Exception:
+            # init_state can leave a half-built state behind when it is the call
+            # that ran out of memory. There is nothing to reset in that case --
+            # dropping the reference is enough.
+            pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    save_file = args.save_file
+    save_dir = os.path.dirname(os.path.abspath(save_file))
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+    progress_file = save_file + ".done"
+
+    if args.restart:
+        for path in (save_file, progress_file):
+            if os.path.exists(path):
+                os.remove(path)
+
+    # Resume where the last run stopped: shots already in the output file are
+    # never recomputed, and their frames are never decoded.
+    completed_shots = load_completed_shots(save_file)
+    completed_videos = load_completed_videos(progress_file)
+    if completed_shots or completed_videos:
+        done_shots = sum(len(shots) for shots in completed_shots.values())
+        print(f"Resuming {save_file}: {done_shots} shot(s) done, "
+              f"{len(completed_videos)} video(s) fully done")
 
     print("Intializing SAM2")
     sam2_checkpoint = args.sam2_checkpoint
@@ -361,146 +481,217 @@ def main():
 
     texts = [["a photo of an animated character"]]
 
-    results = open(args.save_file, "w")
+    # Append, never truncate: the file carries whatever earlier runs produced.
+    results = open(save_file, "a")
 
-    for video_file in os.listdir(args.source_dir):
+    # Shots skipped on CUDA OOM this run, per video, for the closing summary.
+    oom_videos = {}
+
+    # Sorted so that a resumed run walks the shard in the same order as the run
+    # it is picking up from.
+    for video_file in sorted(os.listdir(args.source_dir)):
+        video_idx = video_file.split(".")[0]
+        if video_idx in completed_videos:
+            print(f"Skipping video (already finished): {video_file}")
+            continue
+
         video_file_path = os.path.join(args.source_dir, video_file)
         print(f"Processing video: {video_file_path}")
 
         # Detect shot boundaries
         shot_boundaries = shot_boundary_detection(video_file_path)
 
+        # Shot ids are positions in this list, so they are stable across runs
+        # and can be matched against what is already in the output file.
+        done_shot_ids = completed_shots.get(video_idx, set())
+        pending_shot_ids = {i for i in range(len(shot_boundaries)) if i not in done_shot_ids}
+        if not pending_shot_ids:
+            print(f"Skipping video (all {len(shot_boundaries)} shots already written): {video_file}")
+            mark_video_complete(progress_file, video_idx)
+            continue
+        if done_shot_ids:
+            print(f"Resuming {video_file}: {len(done_shot_ids)} of {len(shot_boundaries)} shots already written")
+
+        oom_shot_ids = []
+
         # The decoded frames are only needed while this video is being tracked,
         # so they go to a temporary directory that is removed as soon as the
         # video is done -- including when tracking raises.
         with tempfile.TemporaryDirectory(prefix="tgrp_frames_") as frame_dir:
             # Split video into shots and save frames
-            shot_dirs = split_video_into_shots_decord(video_file_path, shot_boundaries, frame_dir)
+            shots = split_video_into_shots_decord(
+                video_file_path, shot_boundaries, frame_dir, pending_shot_ids
+            )
 
-            for shot_dir in shot_dirs:
-                save_shot_results = {}
-                save_shot_results["video_idx"] = video_file.split(".")[0]
-                save_shot_results["shot_idx"] = int(shot_dir.split("/")[-1])
-                print(f"Processing frames in shot directory: {shot_dir}")
+            for shot_id, shot_dir in shots:
+                # A shot that exhausts the GPU takes only itself down: the
+                # allocation depends on how long the shot is and how many
+                # objects are being propagated, so the next shot usually fits.
+                # Anything already written stays written.
+                inference_state = None
+                try:
+                    save_shot_results = {}
+                    save_shot_results["video_idx"] = video_idx
+                    save_shot_results["shot_idx"] = shot_id
+                    print(f"Processing frames in shot directory: {shot_dir}")
 
-                frame_names = [
-                    p for p in os.listdir(shot_dir)
-                    if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
-                    ]
-                frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-                frame_indices = [int(os.path.splitext(p)[0]) for p in frame_names]
+                    frame_names = [
+                        p for p in os.listdir(shot_dir)
+                        if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+                        ]
+                    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+                    frame_indices = [int(os.path.splitext(p)[0]) for p in frame_names]
 
-                save_shot_results["start_idx"] = min(frame_indices)
-                save_shot_results["end_idx"] = max(frame_indices)
-
-                # Randomly selelct 3 frames from the shot as seed frames
-                n = len(frame_names)
-                if n < 3:
-                    key_frame_idx = random.sample(range(n), min(n, 3))
-                else:
-                    division_size = n // 3
-                    key_frame_idx = [
-                        random.choice(range(i * division_size, (i + 1) * division_size))
-                        for i in range(3)
-                    ]
-
-                # Detection results for the selected seed frames
-                key_frame_detection_results = {}
-                for frame_idx in key_frame_idx:
-                    img_path = os.path.join(shot_dir, frame_names[frame_idx])
-                    image = Image.open(img_path).convert("RGB")
-
-                    inputs = processor(text=texts, images=image, return_tensors="pt")
-                    inputs = {k: v.to(device) for k, v in inputs.items()}
-                    with torch.no_grad():
-                        outputs = owlv2_model(**inputs)
-
-                    target_sizes = torch.Tensor([image.size[::-1]])
-                    detections = processor.post_process_object_detection(
-                        outputs=outputs, threshold=0.1, target_sizes=target_sizes
-                    )
-                    input_boxes = detections[0]["boxes"].cpu().numpy()
-                    if input_boxes.shape[0] == 0:
+                    if not frame_indices:
+                        print(f"Skipping shot {shot_id}: no frames were written to {shot_dir}")
                         continue
-                    bbox_scores = detections[0]["scores"].cpu().numpy()
 
-                    # NMS for detected boxes
-                    selected_bboxes, selected_scores = non_max_suppression(input_boxes, bbox_scores, iou_threshold=0.5)
+                    save_shot_results["start_idx"] = min(frame_indices)
+                    save_shot_results["end_idx"] = max(frame_indices)
 
-                    key_frame_detection_results[str(frame_idx)] = {"bbox": selected_bboxes,
-                                                                "bbox_scores": selected_scores}
+                    # Randomly selelct 3 frames from the shot as seed frames. The
+                    # draw is keyed to the shot so that re-running one -- after a
+                    # requeue, say -- picks the same seed frames as before.
+                    rng = random.Random(f"{video_idx}:{shot_id}")
+                    n = len(frame_names)
+                    if n < 3:
+                        key_frame_idx = rng.sample(range(n), min(n, 3))
+                    else:
+                        division_size = n // 3
+                        key_frame_idx = [
+                            rng.choice(range(i * division_size, (i + 1) * division_size))
+                            for i in range(3)
+                        ]
 
-                # Initiate SAM2 Propagation
-                track_results_per_shot = {}
+                    # Detection results for the selected seed frames
+                    key_frame_detection_results = {}
+                    for frame_idx in key_frame_idx:
+                        img_path = os.path.join(shot_dir, frame_names[frame_idx])
+                        image = Image.open(img_path).convert("RGB")
 
-                inference_state = video_predictor.init_state(video_path=shot_dir)
+                        inputs = processor(text=texts, images=image, return_tensors="pt")
+                        inputs = {k: v.to(device) for k, v in inputs.items()}
+                        with torch.no_grad():
+                            outputs = owlv2_model(**inputs)
 
-                for frame_idx, anns in tqdm(key_frame_detection_results.items()):
-                    ann_frame_idx = int(frame_idx)
-                    boxes = anns["bbox"]
+                        target_sizes = torch.Tensor([image.size[::-1]])
+                        detections = processor.post_process_object_detection(
+                            outputs=outputs, threshold=0.1, target_sizes=target_sizes
+                        )
+                        input_boxes = detections[0]["boxes"].cpu().numpy()
+                        if input_boxes.shape[0] == 0:
+                            continue
+                        bbox_scores = detections[0]["scores"].cpu().numpy()
 
-                    for i, box in enumerate(boxes):
-                        _, out_obj_ids, out_mask_logits = video_predictor.add_new_points_or_box(
-                                inference_state=inference_state,
-                                frame_idx=ann_frame_idx,
-                                obj_id=i,
-                                box=box,
-                            )
+                        # NMS for detected boxes
+                        selected_bboxes, selected_scores = non_max_suppression(input_boxes, bbox_scores, iou_threshold=0.5)
 
-                    # Propagate the boxes forward
-                    video_segments_forward = {}
-                    for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state):
-                        video_segments_forward[out_frame_idx] = {
-                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                            for i, out_obj_id in enumerate(out_obj_ids)
-                        }
+                        key_frame_detection_results[str(frame_idx)] = {"bbox": selected_bboxes,
+                                                                    "bbox_scores": selected_scores}
 
-                    # Propagate the boxes backward
-                    video_segments_reverse = {}
-                    for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state, reverse=True):
-                        video_segments_reverse[out_frame_idx] = {
-                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                            for i, out_obj_id in enumerate(out_obj_ids)
-                        }
+                    # Initiate SAM2 Propagation
+                    track_results_per_shot = {}
 
-                    # Reset for next propagation
-                    video_predictor.reset_state(inference_state)
+                    inference_state = video_predictor.init_state(video_path=shot_dir)
 
-                    # Merge the forward and backward results
-                    video_segments_all = merge_dicts(video_segments_forward, video_segments_reverse)
+                    for frame_idx, anns in tqdm(key_frame_detection_results.items()):
+                        ann_frame_idx = int(frame_idx)
+                        boxes = anns["bbox"]
 
-                    # Filter empty boxes
-                    video_segments = {}
+                        for i, box in enumerate(boxes):
+                            _, out_obj_ids, out_mask_logits = video_predictor.add_new_points_or_box(
+                                    inference_state=inference_state,
+                                    frame_idx=ann_frame_idx,
+                                    obj_id=i,
+                                    box=box,
+                                )
 
-                    for idx, item in video_segments_all.items():
-                        new_item = {}
-                        for object_id, mask in item.items():
-                            if not np.any(mask):
-                                continue
-                            bbox = get_bounding_box_from_mask(mask)
-                            if box_area(bbox) <= 0:
-                                continue
-                            new_item[object_id] = bbox
-                        video_segments[idx] = new_item
+                        # Propagate the boxes forward
+                        video_segments_forward = {}
+                        for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state):
+                            video_segments_forward[out_frame_idx] = {
+                                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                                for i, out_obj_id in enumerate(out_obj_ids)
+                            }
 
-                    track_results_per_shot[str(frame_idx)] = video_segments
+                        # Propagate the boxes backward
+                        video_segments_reverse = {}
+                        for out_frame_idx, out_obj_ids, out_mask_logits in video_predictor.propagate_in_video(inference_state, reverse=True):
+                            video_segments_reverse[out_frame_idx] = {
+                                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                                for i, out_obj_id in enumerate(out_obj_ids)
+                            }
 
-                # Filter detected tracks through tripartite matching
-                track_results = merge_tracks(track_results_per_shot)
+                        # Reset for next propagation
+                        video_predictor.reset_state(inference_state)
 
-                save_shot_results["tracks"] = track_results
+                        # Merge the forward and backward results
+                        video_segments_all = merge_dicts(video_segments_forward, video_segments_reverse)
 
-                # Save shot results
-                results.write(json.dumps(save_shot_results) + "\n")
-                results.flush()
+                        # Filter empty boxes
+                        video_segments = {}
+
+                        for idx, item in video_segments_all.items():
+                            new_item = {}
+                            for object_id, mask in item.items():
+                                if not np.any(mask):
+                                    continue
+                                bbox = get_bounding_box_from_mask(mask)
+                                if box_area(bbox) <= 0:
+                                    continue
+                                new_item[object_id] = bbox
+                            video_segments[idx] = new_item
+
+                        track_results_per_shot[str(frame_idx)] = video_segments
+
+                    # Filter detected tracks through tripartite matching
+                    track_results = merge_tracks(track_results_per_shot)
+
+                    save_shot_results["tracks"] = track_results
+
+                    # Save shot results
+                    results.write(json.dumps(save_shot_results) + "\n")
+                    results.flush()
+                except torch.cuda.OutOfMemoryError as exc:
+                    # Nothing is written for this shot, so it stays absent from
+                    # the output file and a later run picks it up again.
+                    oom_shot_ids.append(shot_id)
+                    print(f"Skipping shot {shot_id} of {video_file}: CUDA out of memory")
+                    print(f"  {exc}")
+                finally:
+                    release_inference_state(video_predictor, inference_state)
+                    inference_state = None
+
+        if oom_shot_ids:
+            # Deliberately left unmarked: the video is not finished, so a later
+            # run retries exactly the skipped shots and leaves the rest alone.
+            # Marking it here would drop those shots for good.
+            oom_videos[video_idx] = sorted(oom_shot_ids)
+            print(f"{video_file}: {len(oom_shot_ids)} shot(s) skipped on CUDA OOM, "
+                  f"video left unfinished for a later run")
+            continue
+
+        # Every shot of this video is on disk, so a later run can skip it
+        # without running shot detection again.
+        mark_video_complete(progress_file, video_idx)
 
     results.close()
+
+    if oom_videos:
+        skipped = sum(len(shot_ids) for shot_ids in oom_videos.values())
+        print(f"\nCUDA OOM skipped {skipped} shot(s) across {len(oom_videos)} video(s); "
+              f"re-run this shard to retry them:")
+        for video_idx in sorted(oom_videos):
+            print(f"  {video_idx}: shots {oom_videos[video_idx]}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--sam2_checkpoint', required=True, type=str, help='Path to SAM2 checkpoint')
     parser.add_argument('--source_dir', required=True, type=str, help='Path to source video directory')
-    parser.add_argument('--save_file', default=None, type=str)
+    parser.add_argument('--save_file', required=True, type=str,
+                        help='Output JSONL, one line per shot. An existing file is resumed, not overwritten')
+    parser.add_argument('--restart', action='store_true',
+                        help='Discard an existing output file and start the shard from scratch')
     args = parser.parse_args()
 
     main()

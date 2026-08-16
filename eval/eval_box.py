@@ -2,11 +2,29 @@ import argparse
 import json
 import numpy as np
 
-OLD_LABEL_NEW_LABEL_MAP = [("Agnes", "Agnes Gru"), ("Edith", "Edith Gru"), ("Margo", "Margo Gru"), ("Gru", "Felonius Gru"), ("Kyle", "Kyle Gru"), ("Minion", "Minions")]
+OLD_LABEL_NEW_LABEL_MAP = [
+    ("Agnes", "Agnes Gru"),
+    ("Edith", "Edith Gru"),
+    ("Margo", "Margo Gru"),
+    ("Gru", "Felonius Gru"),
+    ("Kyle", "Kyle Gru"),
+    ("Minion", "Minions"),
+    ("Bob the Minion", "Minions"),
+    ("Tim the Minion", "Minions"),
+    ("Manfred", "Manny"),
+    ("Other Mother", "The Beldam (Other Mother)"),
+    ("Uncle Aaron", "Aaron Davis"),
+    ("Jefferson Davis", "Jefferson Morales"),
+    ("Hero Boy", "Hero Boy (Chris)"),
+]
 
 label_mapping = {}
 for (old_label, new_label) in OLD_LABEL_NEW_LABEL_MAP:
     label_mapping[old_label] = new_label
+
+
+def normalize_label(label):
+    return label_mapping.get(label, label)
 
 def load_json(file_path):
     with open(file_path) as infile:
@@ -162,9 +180,7 @@ def main():
 
                 if best_gt_idx >= 0 and best_iou >= iou_threshold:
                     gt_label = gt_boxes_in_image[best_gt_idx]['label']
-                    if gt_label in label_mapping:
-                        gt_label = label_mapping[gt_label]
-                    if pred_label == gt_label:
+                    if normalize_label(pred_label) == normalize_label(gt_label):
                         matched = True
                         gt_boxes_in_image[best_gt_idx]['detected'] = True
 
